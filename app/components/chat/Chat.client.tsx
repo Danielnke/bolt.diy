@@ -77,7 +77,7 @@ export function Chat() {
 const processSampledMessages = createSampler(
   (options) => {
     const { messages, initialMessages, isLoading, parseMessages, storeMessageHistory } = options;
-    parseMessages && parseMessages(messages, isLoading); // Use optional chaining
+    parseMessages(messages, isLoading);
     if (messages.length > initialMessages.length) {
       storeMessageHistory(messages).catch((error) => toast.error(error.message));
     }
@@ -139,6 +139,7 @@ export const ChatImpl = memo(
           );
         },
         onFinish: async (message) => {
+          console.log('Assistant message:', message); // Debug for append response
           if (message.role === 'assistant') {
             await saveChat(message.content, 'bot', model, null);
           }
@@ -209,7 +210,7 @@ export const ChatImpl = memo(
       }
     }, [model, provider, searchParams]);
 
-    const { parsedMessages, parseMessages = null } = useMessageParser(); // Default to null if undefined
+    const { parsedMessages, parseMessages = null } = useMessageParser(); // Safe default for parseMessages
     const { enhancingPrompt, promptEnhanced, enhancePrompt, resetEnhancer } = usePromptEnhancer();
 
     const TEXTAREA_MAX_HEIGHT = chatStarted ? 400 : 200;
@@ -219,12 +220,11 @@ export const ChatImpl = memo(
     }, []);
 
     useEffect(() => {
-      console.log('parseMessages:', parseMessages); // Debug the value
       processSampledMessages({
         messages,
         initialMessages,
         isLoading,
-        parseMessages: parseMessages || ((messages, isLoading) => messages), // Fallback function
+        parseMessages: parseMessages || ((messages, isLoading) => messages), // Fallback
         storeMessageHistory,
       });
     }, [messages, isLoading, parseMessages, storeMessageHistory]);
@@ -452,6 +452,8 @@ export const ChatImpl = memo(
       Cookies.set('selectedProvider', newProvider.name, { expires: 30 });
     };
 
+    const providerName = provider?.name || 'openrouter'; // Fallback for enhancePrompt
+
     return (
       <BaseChat
         ref={animationScope}
@@ -484,11 +486,11 @@ export const ChatImpl = memo(
           }
           return {
             ...message,
-            content: parseMessages && typeof parseMessages === 'function' ? (parseMessages[i] || '') : parsedMessages[i] || '',
+            content: parseMessages ? parsedMessages[i] || '' : 'Parsing unavailable', // Safe fallback
           };
         })}
         enhancePrompt={() => {
-          console.log('Enhancing prompt with input:', input);
+          console.log('Enhancing prompt with input:', input, 'Model:', model, 'Provider:', providerName, 'API Keys:', apiKeys);
           enhancePrompt(
             input,
             (enhancedInput) => {
@@ -497,10 +499,10 @@ export const ChatImpl = memo(
               scrollTextArea();
             },
             model,
-            provider.name, // Use provider.name explicitly
+            providerName, // Use providerName with fallback
             apiKeys,
           ).catch((err) => {
-            console.error('Enhance prompt failed:', err);
+            console.error('Enhance prompt failed:', err, 'Request:', { input, model, provider: providerName, apiKeys });
             toast.error('Failed to enhance prompt: ' + err.message);
           });
         }}
