@@ -75,16 +75,9 @@ export function Chat() {
 }
 
 const processSampledMessages = createSampler(
-  (options: {
-    messages: Message[];
-    initialMessages: Message[];
-    isLoading: boolean;
-    parseMessages: (messages: Message[], isLoading: boolean) => void;
-    storeMessageHistory: (messages: Message[]) => Promise<void>;
-  }) => {
+  (options) => {
     const { messages, initialMessages, isLoading, parseMessages, storeMessageHistory } = options;
     parseMessages(messages, isLoading);
-
     if (messages.length > initialMessages.length) {
       storeMessageHistory(messages).catch((error) => toast.error(error.message));
     }
@@ -145,14 +138,10 @@ export const ChatImpl = memo(
             'There was an error processing your request: ' + (e.message ? e.message : 'No details were returned'),
           );
         },
-        onFinish: (message, response) => {
-          const usage = response.usage;
-
-          if (usage) {
-            console.log('Token usage:', usage);
+        onFinish: async (message) => {
+          if (message.role === 'assistant') {
+            await saveChat(message.content, 'bot', model, null); // No image for assistant response
           }
-
-          logger.debug('Finished streaming');
         },
         initialMessages,
         initialInput: Cookies.get(PROMPT_COOKIE_KEY) || '',
@@ -164,11 +153,15 @@ export const ChatImpl = memo(
         try {
           const response = await fetch('/api/get-chats');
           const chats = await response.json();
-          // Map D1 data to match Message type expected by useChat
-          const formattedChats = chats.map((chat: any) => ({
+          const formattedChats = chats.map((chat) => ({
             id: chat.id.toString(),
             role: chat.sender === 'user' ? 'user' : 'assistant',
-            content: chat.message,
+            content: chat.image_url
+              ? [
+                  { type: 'text', text: chat.message },
+                  { type: 'image', image: chat.image_url },
+                ]
+              : chat.message,
           }));
           setMessages(formattedChats);
         } catch (err) {
@@ -179,13 +172,13 @@ export const ChatImpl = memo(
       loadChats();
     }, [setMessages]);
 
-    // Save chat message to D1
-    const saveChat = async (message: string, sender: string, model: string) => {
+    // Save chat message to D1 and R2 (if image present)
+    const saveChat = async (message: string, sender: string, model: string, image: string | null = null) => {
       try {
         await fetch('/api/save-chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message, sender, model }),
+          body: JSON.stringify({ message, sender, model, image }),
         });
       } catch (err) {
         console.error('Failed to save chat:', err);
@@ -267,17 +260,15 @@ export const ChatImpl = memo(
       if (_input.length === 0 || isLoading) return;
 
       await workbenchStore.saveAllFiles();
-
-      if (error != null) {
-        setMessages(messages.slice(0, -1));
-      }
+      if (error != null) setMessages(messages.slice(0, -1));
 
       const fileModifications = workbenchStore.getFileModifcations();
       chatStore.setKey('aborted', false);
       runAnimation();
 
-      // Save user message to D1 before sending to LLM
-      await saveChat(_input, 'user', model);
+      // Save user message with image (if any)
+      const image = imageDataList.length > 0 ? imageDataList[0] : null; // Use first image
+      await saveChat(_input, 'user', model, image);
 
       if (!chatStarted && _input && autoSelectTemplate) {
         setFakeLoading(true);
@@ -336,8 +327,7 @@ export const ChatImpl = memo(
             ]);
             reload();
             setFakeLoading(false);
-            // Save assistant response to D1
-            await saveChat(assistantMessage, 'bot', model);
+            await saveChat(assistantMessage, 'bot', model, null);
             return;
           } else {
             setMessages([
@@ -369,153 +359,139 @@ export const ChatImpl = memo(
                 {
                   type: 'text',
                   text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
-                },
-                ...imageDataList.map((imageData) => ({
-                  type: 'image',
-                  image: imageData,
-                })),
-              ] as any,
-            },
-          ]);
-          reload();
-          setFakeLoading(false);
-          return;
-        }
-      }
-
-      // Append message and wait for LLM response
-      let assistantResponse = '';
-      if (fileModifications !== undefined) {
-        await append({
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
-            },
-            ...imageDataList.map((imageData) => ({
-              type: 'image',
-              image: imageData,
-            })),
-          ] as any,
-        });
-        workbenchStore.resetAllFileModifications();
-      } else {
-        await append({
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
-            },
-            ...imageDataList.map((imageData) => ({
-              type: 'image',
-              image: imageData,
-            })),
-          ] as any,
-        });
-      }
-
-      // Save assistant response after it’s received (onFinish hook)
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage?.role === 'assistant') {
-        assistantResponse = lastMessage.content as string;
-        await saveChat(assistantResponse, 'bot', model);
-      }
-
-      setInput('');
-      Cookies.remove(PROMPT_COOKIE_KEY);
-      setUploadedFiles([]);
-      setImageDataList([]);
-      resetEnhancer();
-      textareaRef.current?.blur();
-    };
-
-    const onTextareaChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-      handleInputChange(event);
-    };
-
-    const debouncedCachePrompt = useCallback(
-      debounce((event: React.ChangeEvent<HTMLTextAreaElement>) => {
-        const trimmedValue = event.target.value.trim();
-        Cookies.set(PROMPT_COOKIE_KEY, trimmedValue, { expires: 30 });
-      }, 1000),
-      [],
-    );
-
-    const [messageRef, scrollRef] = useSnapScroll();
-
-    useEffect(() => {
-      const storedApiKeys = Cookies.get('apiKeys');
-      if (storedApiKeys) {
-        setApiKeys(JSON.parse(storedApiKeys));
-      }
-    }, []);
-
-    const handleModelChange = (newModel: string) => {
-      setModel(newModel);
-      Cookies.set('selectedModel', newModel, { expires: 30 });
-    };
-
-    const handleProviderChange = (newProvider: ProviderInfo) => {
-      setProvider(newProvider);
-      Cookies.set('selectedProvider', newProvider.name, { expires: 30 });
-    };
-
-    return (
-      <BaseChat
-        ref={animationScope}
-        textareaRef={textareaRef}
-        input={input}
-        showChat={showChat}
-        chatStarted={chatStarted}
-        isStreaming={isLoading || fakeLoading}
-        enhancingPrompt={enhancingPrompt}
-        promptEnhanced={promptEnhanced}
-        sendMessage={sendMessage}
-        model={model}
-        setModel={handleModelChange}
-        provider={provider}
-        setProvider={handleProviderChange}
-        providerList={activeProviders}
-        messageRef={messageRef}
-        scrollRef={scrollRef}
-        handleInputChange={(e) => {
-          onTextareaChange(e);
-          debouncedCachePrompt(e);
-        }}
-        handleStop={abort}
-        description={description}
-        importChat={importChat}
-        exportChat={exportChat}
-        messages={messages.map((message, i) => {
-          if (message.role === 'user') {
-            return message;
+                  },
+                  ...imageDataList.map((imageData) => ({
+                    type: 'image',
+                    image: imageData,
+                  })),
+                ] as any,
+              },
+            ]);
+            reload();
+            setFakeLoading(false);
+            return;
           }
-          return {
-            ...message,
-            content: parsedMessages[i] || '',
-          };
-        })}
-        enhancePrompt={() => {
-          enhancePrompt(
-            input,
-            (input) => {
-              setInput(input);
-              scrollTextArea();
-            },
-            model,
-            provider,
-            apiKeys,
-          );
-        }}
-        uploadedFiles={uploadedFiles}
-        setUploadedFiles={setUploadedFiles}
-        imageDataList={imageDataList}
-        setImageDataList={setImageDataList}
-        actionAlert={actionAlert}
-        clearAlert={() => workbenchStore.clearAlert()}
-      />
-    );
-  },
-);
+        }
+
+        // Append message to LLM
+        if (fileModifications !== undefined) {
+          await append({
+            role: 'user',
+            content: [
+              { type: 'text', text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}` },
+              ...imageDataList.map((imageData) => ({
+                type: 'image',
+                image: imageData,
+              })),
+            ] as any,
+          });
+          workbenchStore.resetAllFileModifications();
+        } else {
+          await append({
+            role: 'user',
+            content: [
+              { type: 'text', text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}` },
+              ...imageDataList.map((imageData) => ({
+                type: 'image',
+                image: imageData,
+              })),
+            ] as any,
+          });
+        }
+
+        setInput('');
+        Cookies.remove(PROMPT_COOKIE_KEY);
+        setUploadedFiles([]);
+        setImageDataList([]);
+        resetEnhancer();
+        textareaRef.current?.blur();
+      };
+
+      const onTextareaChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+        handleInputChange(event);
+      };
+
+      const debouncedCachePrompt = useCallback(
+        debounce((event: React.ChangeEvent<HTMLTextAreaElement>) => {
+          const trimmedValue = event.target.value.trim();
+          Cookies.set(PROMPT_COOKIE_KEY, trimmedValue, { expires: 30 });
+        }, 1000),
+        [],
+      );
+
+      const [messageRef, scrollRef] = useSnapScroll();
+
+      useEffect(() => {
+        const storedApiKeys = Cookies.get('apiKeys');
+        if (storedApiKeys) {
+          setApiKeys(JSON.parse(storedApiKeys));
+        }
+      }, []);
+
+      const handleModelChange = (newModel: string) => {
+        setModel(newModel);
+        Cookies.set('selectedModel', newModel, { expires: 30 });
+      };
+
+      const handleProviderChange = (newProvider: ProviderInfo) => {
+        setProvider(newProvider);
+        Cookies.set('selectedProvider', newProvider.name, { expires: 30 });
+      };
+
+      return (
+        <BaseChat
+          ref={animationScope}
+          textareaRef={textareaRef}
+          input={input}
+          showChat={showChat}
+          chatStarted={chatStarted}
+          isStreaming={isLoading || fakeLoading}
+          enhancingPrompt={enhancingPrompt}
+          promptEnhanced={promptEnhanced}
+          sendMessage={sendMessage}
+          model={model}
+          setModel={handleModelChange}
+          provider={provider}
+          setProvider={handleProviderChange}
+          providerList={activeProviders}
+          messageRef={messageRef}
+          scrollRef={scrollRef}
+          handleInputChange={(e) => {
+            onTextareaChange(e);
+            debouncedCachePrompt(e);
+          }}
+          handleStop={abort}
+          description={description}
+          importChat={importChat}
+          exportChat={exportChat}
+          messages={messages.map((message, i) => {
+            if (message.role === 'user') {
+              return message;
+            }
+            return {
+              ...message,
+              content: parsedMessages[i] || '',
+            };
+          })}
+          enhancePrompt={() => {
+            enhancePrompt(
+              input,
+              (input) => {
+                setInput(input);
+                scrollTextArea();
+              },
+              model,
+              provider,
+              apiKeys,
+            );
+          }}
+          uploadedFiles={uploadedFiles}
+          setUploadedFiles={setUploadedFiles}
+          imageDataList={imageDataList}
+          setImageDataList={setImageDataList}
+          actionAlert={actionAlert}
+          clearAlert={() => workbenchStore.clearAlert()}
+        />
+      );
+    },
+  );
