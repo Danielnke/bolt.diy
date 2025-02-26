@@ -495,7 +495,7 @@ export const ChatImpl = memo(
               scrollTextArea();
             },
             model,
-            provider,
+            provider.name, // Use provider.name explicitly
             apiKeys,
           ).catch((err) => {
             console.error('Enhance prompt failed:', err);
