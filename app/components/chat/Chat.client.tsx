@@ -52,26 +52,18 @@ export function Chat() {
         />
       )}
       <ToastContainer
-        closeButton={({ closeToast }) => {
-          return (
-            <button className="Toastify__close-button" onClick={closeToast}>
-              <div className="i-ph:x text-lg" />
-            </button>
-          );
-        }}
+        closeButton={({ closeToast }) => (
+          <button className="Toastify__close-button" onClick={closeToast}>
+            <div className="i-ph:x text-lg" />
+          </button>
+        )}
         icon={({ type }) => {
-          /**
-           * @todo Handle more types if we need them. This may require extra color palettes.
-           */
           switch (type) {
-            case 'success': {
+            case 'success':
               return <div className="i-ph:check-bold text-bolt-elements-icon-success text-2xl" />;
-            }
-            case 'error': {
+            case 'error':
               return <div className="i-ph:warning-circle-bold text-bolt-elements-icon-error text-2xl" />;
-            }
           }
-
           return undefined;
         }}
         position="bottom-right"
@@ -114,8 +106,8 @@ export const ChatImpl = memo(
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const [chatStarted, setChatStarted] = useState(initialMessages.length > 0);
-    const [uploadedFiles, setUploadedFiles] = useState<File[]>([]); // Move here
-    const [imageDataList, setImageDataList] = useState<string[]>([]); // Move here
+    const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+    const [imageDataList, setImageDataList] = useState<string[]>([]);
     const [searchParams, setSearchParams] = useSearchParams();
     const [fakeLoading, setFakeLoading] = useState(false);
     const files = useStore(workbenchStore.files);
@@ -158,8 +150,6 @@ export const ChatImpl = memo(
 
           if (usage) {
             console.log('Token usage:', usage);
-
-            // You can now use the usage data as needed
           }
 
           logger.debug('Finished streaming');
@@ -167,11 +157,44 @@ export const ChatImpl = memo(
         initialMessages,
         initialInput: Cookies.get(PROMPT_COOKIE_KEY) || '',
       });
+
+    // Load chat history from D1 on mount
+    useEffect(() => {
+      const loadChats = async () => {
+        try {
+          const response = await fetch('/api/get-chats');
+          const chats = await response.json();
+          // Map D1 data to match Message type expected by useChat
+          const formattedChats = chats.map((chat: any) => ({
+            id: chat.id.toString(),
+            role: chat.sender === 'user' ? 'user' : 'assistant',
+            content: chat.message,
+          }));
+          setMessages(formattedChats);
+        } catch (err) {
+          console.error('Failed to load chats:', err);
+          toast.error('Could not load chat history');
+        }
+      };
+      loadChats();
+    }, [setMessages]);
+
+    // Save chat message to D1
+    const saveChat = async (message: string, sender: string, model: string) => {
+      try {
+        await fetch('/api/save-chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, sender, model }),
+        });
+      } catch (err) {
+        console.error('Failed to save chat:', err);
+        toast.error('Could not save chat message');
+      }
+    };
+
     useEffect(() => {
       const prompt = searchParams.get('prompt');
-
-      // console.log(prompt, searchParams, model, provider);
-
       if (prompt) {
         setSearchParams({});
         runAnimation();
@@ -182,7 +205,7 @@ export const ChatImpl = memo(
               type: 'text',
               text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${prompt}`,
             },
-          ] as any, // Type assertion to bypass compiler check
+          ] as any,
         });
       }
     }, [model, provider, searchParams]);
@@ -208,7 +231,6 @@ export const ChatImpl = memo(
 
     const scrollTextArea = () => {
       const textarea = textareaRef.current;
-
       if (textarea) {
         textarea.scrollTop = textarea.scrollHeight;
       }
@@ -222,46 +244,28 @@ export const ChatImpl = memo(
 
     useEffect(() => {
       const textarea = textareaRef.current;
-
       if (textarea) {
         textarea.style.height = 'auto';
-
         const scrollHeight = textarea.scrollHeight;
-
         textarea.style.height = `${Math.min(scrollHeight, TEXTAREA_MAX_HEIGHT)}px`;
         textarea.style.overflowY = scrollHeight > TEXTAREA_MAX_HEIGHT ? 'auto' : 'hidden';
       }
     }, [input, textareaRef]);
 
     const runAnimation = async () => {
-      if (chatStarted) {
-        return;
-      }
-
+      if (chatStarted) return;
       await Promise.all([
         animate('#examples', { opacity: 0, display: 'none' }, { duration: 0.1 }),
         animate('#intro', { opacity: 0, flex: 1 }, { duration: 0.2, ease: cubicEasingFn }),
       ]);
-
       chatStore.setKey('started', true);
-
       setChatStarted(true);
     };
 
     const sendMessage = async (_event: React.UIEvent, messageInput?: string) => {
       const _input = messageInput || input;
+      if (_input.length === 0 || isLoading) return;
 
-      if (_input.length === 0 || isLoading) {
-        return;
-      }
-
-      /**
-       * @note (delm) Usually saving files shouldn't take long but it may take longer if there
-       * many unsaved files. In that case we need to block user input and show an indicator
-       * of some kind so the user is aware that something is happening. But I consider the
-       * happy case to be no unsaved files and I would expect users to save their changes
-       * before they send another message.
-       */
       await workbenchStore.saveAllFiles();
 
       if (error != null) {
@@ -269,10 +273,11 @@ export const ChatImpl = memo(
       }
 
       const fileModifications = workbenchStore.getFileModifcations();
-
       chatStore.setKey('aborted', false);
-
       runAnimation();
+
+      // Save user message to D1 before sending to LLM
+      await saveChat(_input, 'user', model);
 
       if (!chatStarted && _input && autoSelectTemplate) {
         setFakeLoading(true);
@@ -289,11 +294,9 @@ export const ChatImpl = memo(
                 type: 'image',
                 image: imageData,
               })),
-            ] as any, // Type assertion to bypass compiler check
+            ] as any,
           },
         ]);
-
-        // reload();
 
         const { template, title } = await selectStarterTemplate({
           message: _input,
@@ -308,20 +311,16 @@ export const ChatImpl = memo(
             } else {
               toast.warning('Failed to import starter template\n Continuing with blank template');
             }
-
             return null;
           });
 
           if (temResp) {
             const { assistantMessage, userMessage } = temResp;
-
             setMessages([
               {
                 id: `${new Date().getTime()}`,
                 role: 'user',
                 content: _input,
-
-                // annotations: ['hidden'],
               },
               {
                 id: `${new Date().getTime()}`,
@@ -335,10 +334,10 @@ export const ChatImpl = memo(
                 annotations: ['hidden'],
               },
             ]);
-
             reload();
             setFakeLoading(false);
-
+            // Save assistant response to D1
+            await saveChat(assistantMessage, 'bot', model);
             return;
           } else {
             setMessages([
@@ -354,12 +353,11 @@ export const ChatImpl = memo(
                     type: 'image',
                     image: imageData,
                   })),
-                ] as any, // Type assertion to bypass compiler check
+                ] as any,
               },
             ]);
             reload();
             setFakeLoading(false);
-
             return;
           }
         } else {
@@ -376,25 +374,19 @@ export const ChatImpl = memo(
                   type: 'image',
                   image: imageData,
                 })),
-              ] as any, // Type assertion to bypass compiler check
+              ] as any,
             },
           ]);
           reload();
           setFakeLoading(false);
-
           return;
         }
       }
 
+      // Append message and wait for LLM response
+      let assistantResponse = '';
       if (fileModifications !== undefined) {
-        /**
-         * If we have file modifications we append a new user message manually since we have to prefix
-         * the user input with the file modifications and we don't want the new user input to appear
-         * in the prompt. Using `append` is almost the same as `handleSubmit` except that we have to
-         * manually reset the input and we'd have to manually pass in file attachments. However, those
-         * aren't relevant here.
-         */
-        append({
+        await append({
           role: 'user',
           content: [
             {
@@ -405,16 +397,11 @@ export const ChatImpl = memo(
               type: 'image',
               image: imageData,
             })),
-          ] as any, // Type assertion to bypass compiler check
+          ] as any,
         });
-
-        /**
-         * After sending a new message we reset all modifications since the model
-         * should now be aware of all the changes.
-         */
         workbenchStore.resetAllFileModifications();
       } else {
-        append({
+        await append({
           role: 'user',
           content: [
             {
@@ -425,34 +412,29 @@ export const ChatImpl = memo(
               type: 'image',
               image: imageData,
             })),
-          ] as any, // Type assertion to bypass compiler check
+          ] as any,
         });
+      }
+
+      // Save assistant response after it’s received (onFinish hook)
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage?.role === 'assistant') {
+        assistantResponse = lastMessage.content as string;
+        await saveChat(assistantResponse, 'bot', model);
       }
 
       setInput('');
       Cookies.remove(PROMPT_COOKIE_KEY);
-
-      // Add file cleanup here
       setUploadedFiles([]);
       setImageDataList([]);
-
       resetEnhancer();
-
       textareaRef.current?.blur();
     };
 
-    /**
-     * Handles the change event for the textarea and updates the input state.
-     * @param event - The change event from the textarea.
-     */
     const onTextareaChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
       handleInputChange(event);
     };
 
-    /**
-     * Debounced function to cache the prompt in cookies.
-     * Caches the trimmed value of the textarea input after a delay to optimize performance.
-     */
     const debouncedCachePrompt = useCallback(
       debounce((event: React.ChangeEvent<HTMLTextAreaElement>) => {
         const trimmedValue = event.target.value.trim();
@@ -465,7 +447,6 @@ export const ChatImpl = memo(
 
     useEffect(() => {
       const storedApiKeys = Cookies.get('apiKeys');
-
       if (storedApiKeys) {
         setApiKeys(JSON.parse(storedApiKeys));
       }
@@ -511,7 +492,6 @@ export const ChatImpl = memo(
           if (message.role === 'user') {
             return message;
           }
-
           return {
             ...message,
             content: parsedMessages[i] || '',
