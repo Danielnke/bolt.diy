@@ -452,7 +452,7 @@ export const ChatImpl = memo(
       Cookies.set('selectedProvider', newProvider.name, { expires: 30 });
     };
 
-    const providerName = provider?.name || 'openrouter'; // Fallback for enhancePrompt
+    const providerName = provider?.name?.toLowerCase() || 'openrouter'; // Lowercase for consistency
 
     return (
       <BaseChat
@@ -490,7 +490,16 @@ export const ChatImpl = memo(
           };
         })}
         enhancePrompt={() => {
-          console.log('Enhancing prompt with input:', input, 'Model:', model, 'Provider:', providerName, 'API Keys:', apiKeys);
+          console.log(
+            'Enhancing prompt with input:',
+            input,
+            'Model:',
+            model,
+            'Provider:',
+            providerName,
+            'API Keys:',
+            apiKeys
+          );
           enhancePrompt(
             input,
             (enhancedInput) => {
@@ -499,10 +508,15 @@ export const ChatImpl = memo(
               scrollTextArea();
             },
             model,
-            providerName, // Use providerName with fallback
-            apiKeys,
+            providerName, // Use lowercase providerName
+            apiKeys
           ).catch((err) => {
-            console.error('Enhance prompt failed:', err, 'Request:', { input, model, provider: providerName, apiKeys });
+            console.error(
+              'Enhance prompt failed:',
+              err,
+              'Request:',
+              { input, model, provider: providerName, apiKeys }
+            );
             toast.error('Failed to enhance prompt: ' + err.message);
           });
         }}
