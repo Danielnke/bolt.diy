@@ -265,7 +265,7 @@ export const ChatImpl = memo(
       const _input = messageInput || input;
       if (_input.length === 0 || isLoading) return;
 
-      console.log('sendMessage called with input:', _input); // Debug log
+      console.log('sendMessage called with input:', _input);
 
       await workbenchStore.saveAllFiles();
       if (error != null) setMessages(messages.slice(0, -1));
@@ -277,65 +277,88 @@ export const ChatImpl = memo(
       const image = imageDataList.length > 0 ? imageDataList[0] : null;
       await saveChat(_input, 'user', model, image);
 
-      if (!chatStarted && _input && autoSelectTemplate) {
-        setFakeLoading(true);
-        setMessages([
-          {
-            id: `${new Date().getTime()}`,
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
-              },
-              ...imageDataList.map((imageData) => ({
-                type: 'image',
-                image: imageData,
-              })),
-            ] as any,
-          },
-        ]);
+      console.log('Appending message to LLM');
+      try {
+        if (!chatStarted && _input && autoSelectTemplate) {
+          setFakeLoading(true);
+          setMessages([
+            {
+              id: `${new Date().getTime()}`,
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
+                },
+                ...imageDataList.map((imageData) => ({
+                  type: 'image',
+                  image: imageData,
+                })),
+              ] as any,
+            },
+          ]);
 
-        const { template, title } = await selectStarterTemplate({
-          message: _input,
-          model,
-          provider,
-        });
-
-        if (template !== 'blank') {
-          const temResp = await getTemplates(template, title).catch((e) => {
-            if (e.message.includes('rate limit')) {
-              toast.warning('Rate limit exceeded. Skipping starter template\n Continuing with blank template');
-            } else {
-              toast.warning('Failed to import starter template\n Continuing with blank template');
-            }
-            return null;
+          const { template, title } = await selectStarterTemplate({
+            message: _input,
+            model,
+            provider,
           });
 
-          if (temResp) {
-            const { assistantMessage, userMessage } = temResp;
-            setMessages([
-              {
-                id: `${new Date().getTime()}`,
-                role: 'user',
-                content: _input,
-              },
-              {
-                id: `${new Date().getTime()}`,
-                role: 'assistant',
-                content: assistantMessage,
-              },
-              {
-                id: `${new Date().getTime()}`,
-                role: 'user',
-                content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`,
-                annotations: ['hidden'],
-              },
-            ]);
-            reload();
-            setFakeLoading(false);
-            await saveChat(assistantMessage, 'bot', model, null);
-            return;
+          if (template !== 'blank') {
+            const temResp = await getTemplates(template, title).catch((e) => {
+              if (e.message.includes('rate limit')) {
+                toast.warning('Rate limit exceeded. Skipping starter template\n Continuing with blank template');
+              } else {
+                toast.warning('Failed to import starter template\n Continuing with blank template');
+              }
+              return null;
+            });
+
+            if (temResp) {
+              const { assistantMessage, userMessage } = temResp;
+              setMessages([
+                {
+                  id: `${new Date().getTime()}`,
+                  role: 'user',
+                  content: _input,
+                },
+                {
+                  id: `${new Date().getTime()}`,
+                  role: 'assistant',
+                  content: assistantMessage,
+                },
+                {
+                  id: `${new Date().getTime()}`,
+                  role: 'user',
+                  content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`,
+                  annotations: ['hidden'],
+                },
+              ]);
+              reload();
+              setFakeLoading(false);
+              await saveChat(assistantMessage, 'bot', model, null);
+              return;
+            } else {
+              setMessages([
+                {
+                  id: `${new Date().getTime()}`,
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'text',
+                      text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
+                    },
+                    ...imageDataList.map((imageData) => ({
+                      type: 'image',
+                      image: imageData,
+                    })),
+                  ] as any,
+                },
+              ]);
+              reload();
+              setFakeLoading(false);
+              return;
+            }
           } else {
             setMessages([
               {
@@ -357,52 +380,36 @@ export const ChatImpl = memo(
             setFakeLoading(false);
             return;
           }
-        } else {
-          setMessages([
-            {
-              id: `${new Date().getTime()}`,
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
-                },
-                ...imageDataList.map((imageData) => ({
-                  type: 'image',
-                  image: imageData,
-                })),
-              ] as any,
-            },
-          ]);
-          reload();
-          setFakeLoading(false);
-          return;
         }
-      }
 
-      if (fileModifications !== undefined) {
-        await append({
-          role: 'user',
-          content: [
-            { type: 'text', text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}` },
-            ...imageDataList.map((imageData) => ({
-              type: 'image',
-              image: imageData,
-            })),
-          ] as any,
-        });
-        workbenchStore.resetAllFileModifications();
-      } else {
-        await append({
-          role: 'user',
-          content: [
-            { type: 'text', text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}` },
-            ...imageDataList.map((imageData) => ({
-              type: 'image',
-              image: imageData,
-            })),
-          ] as any,
-        });
+        let appendResponse;
+        if (fileModifications !== undefined) {
+          appendResponse = await append({
+            role: 'user',
+            content: [
+              { type: 'text', text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}` },
+              ...imageDataList.map((imageData) => ({
+                type: 'image',
+                image: imageData,
+              })),
+            ] as any,
+          });
+          workbenchStore.resetAllFileModifications();
+        } else {
+          appendResponse = await append({
+            role: 'user',
+            content: [
+              { type: 'text', text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}` },
+              ...imageDataList.map((imageData) => ({
+                type: 'image',
+                image: imageData,
+              })),
+            ] as any,
+          });
+        }
+        console.log('Append response:', appendResponse);
+      } catch (appendError) {
+        console.error('Append failed:', appendError);
       }
 
       setInput('');
