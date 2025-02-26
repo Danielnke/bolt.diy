@@ -470,6 +470,40 @@ export const ChatImpl = memo(
     const validModels = ['xai/grok-4o', 'google/gemini-2.0-flash-thinking-exp-1219:free'];
     const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to free Grok
 
+    const enhancePromptWithDebug = async () => {
+      if (!input.trim()) {
+        toast.error('Please enter a prompt to enhance');
+        return;
+      }
+      const requestBody = {
+        input: input.trim(),
+        model: finalModel,
+        provider: providerName,
+        apiKey: apiKeys[providerName] || apiKeys['openrouter'], // Use provider-specific key or OpenRouter key
+      };
+      console.log('Enhancing prompt with request:', requestBody);
+      try {
+        const response = await fetch('/api/enhancer', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+        }
+        const data = await response.json();
+        console.log('Enhanced prompt result:', data);
+        setInput(data.enhanced || input); // Fallback to original if no enhancement
+        scrollTextArea();
+      } catch (err) {
+        console.error('Enhance prompt failed:', err, 'Request:', requestBody);
+        toast.error('Failed to enhance prompt: ' + err.message);
+      }
+    };
+
     return (
       <BaseChat
         ref={animationScope}
@@ -505,43 +539,7 @@ export const ChatImpl = memo(
             content: parseMessages ? parsedMessages[i] || '' : 'Parsing unavailable', // Safe fallback
           };
         })}
-        enhancePrompt={() => {
-          if (!input.trim()) {
-            toast.error('Please enter a prompt to enhance');
-            return;
-          }
-          console.log(
-            'Enhancing prompt with input:',
-            input,
-            'Model:',
-            finalModel,
-            'Provider:',
-            providerName,
-            'API Keys:',
-            apiKeys
-          );
-          // Fallback to openrouter if provider isn’t valid
-          const finalProvider = validProviders.includes(providerName) ? providerName : 'openrouter';
-          enhancePrompt(
-            input,
-            (enhancedInput) => {
-              console.log('Enhanced prompt result:', enhancedInput);
-              setInput(enhancedInput);
-              scrollTextArea();
-            },
-            finalModel, // Use only free models
-            finalProvider, // Use finalProvider with fallback
-            apiKeys
-          ).catch((err) => {
-            console.error(
-              'Enhance prompt failed:',
-              err,
-              'Request:',
-              { input, model: finalModel, provider: finalProvider, apiKeys }
-            );
-            toast.error('Failed to enhance prompt: ' + err.message);
-          });
-        }}
+        enhancePrompt={enhancePromptWithDebug} // Use the custom enhance function
         uploadedFiles={uploadedFiles}
         setUploadedFiles={setUploadedFiles}
         imageDataList={imageDataList}
