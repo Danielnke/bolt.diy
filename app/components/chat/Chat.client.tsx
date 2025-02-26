@@ -113,7 +113,7 @@ export const ChatImpl = memo(
     });
     const [provider, setProvider] = useState(() => {
       const savedProvider = Cookies.get('selectedProvider');
-      return (PROVIDER_LIST.find((p) => p.name === savedProvider) || DEFAULT_PROVIDER) as ProviderInfo;
+      return (PROVIDER_LIST.find((p) => p.name.toLowerCase() === savedProvider?.toLowerCase()) || DEFAULT_PROVIDER) as ProviderInfo;
     });
 
     const { showChat } = useStore(chatStore);
@@ -453,55 +453,70 @@ export const ChatImpl = memo(
     };
 
     const providerName = provider?.name?.toLowerCase() || 'openrouter'; // Lowercase for consistency
-    const validProviders = ['openrouter', 'anthropic', 'openai']; // Define valid providers
+    const validProviders = ['openrouter', 'anthropic', 'openai']; // Allow all specified providers
 
-    // Set OpenRouter API key from environment variable or prompt
+    // Set API key from environment variable or prompt for any valid provider
     useEffect(() => {
-      if (providerName === 'openrouter' && !apiKeys['openrouter']) {
-        const openRouterKey = process.env.OPENROUTER_API_KEY || prompt('Please enter your OpenRouter API key:');
-        if (openRouterKey) {
-          setApiKeys((prev) => ({ ...prev, openrouter: openRouterKey }));
-          Cookies.set('apiKeys', JSON.stringify({ ...apiKeys, openrouter: openRouterKey }), { expires: 30 });
+      if (!apiKeys[providerName] && validProviders.includes(providerName)) {
+        const envKey = process.env[`${providerName.toUpperCase()}_API_KEY`] || '';
+        const promptedKey = envKey || prompt(`Please enter your ${providerName} API key:`);
+        if (promptedKey) {
+          setApiKeys((prev) => ({ ...prev, [providerName]: promptedKey }));
+          Cookies.set('apiKeys', JSON.stringify({ ...apiKeys, [providerName]: promptedKey }), { expires: 30 });
         }
       }
     }, [providerName, apiKeys]);
 
-    // Restrict to free OpenRouter models
-    const validModels = ['xai/grok-4o', 'google/gemini-2.0-flash-thinking-exp-1219:free'];
-    const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to free Grok
+    // Allow flexible model selection (no strict free model restriction unless specified)
+    const validModels = [
+      'xai/grok-4o',
+      'google/gemini-2.0-flash-thinking-exp-1219:free',
+      'anthropic/claude-3.5-sonnet',
+      'openai/gpt-4o-mini',
+    ]; // Include popular models from all providers
+    const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to Grok if invalid
 
-    const enhancePromptWithDebug = async () => {
+    const enhancePromptWithFlexibility = async () => {
       if (!input.trim()) {
         toast.error('Please enter a prompt to enhance');
         return;
       }
-      const requestBody = {
-        input: input.trim(),
-        model: finalModel,
-        provider: providerName,
-        apiKey: apiKeys[providerName] || apiKeys['openrouter'], // Use provider-specific key or OpenRouter key
-      };
-      console.log('Enhancing prompt with request:', requestBody);
-      try {
-        const response = await fetch('/api/enhancer', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestBody),
-        });
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+      const availableProviders = [
+        { name: 'openrouter', apiKey: apiKeys['openrouter'] || process.env.OPENROUTER_API_KEY || '' },
+        { name: 'anthropic', apiKey: apiKeys['anthropic'] || process.env.ANTHROPIC_API_KEY || '' },
+        { name: 'openai', apiKey: apiKeys['openai'] || process.env.OPENAI_API_KEY || '' },
+      ].filter((p) => p.apiKey); // Filter out providers with no API key
+
+      for (const { name: provider, apiKey } of availableProviders) {
+        const requestBody = {
+          input: input.trim(),
+          model: finalModel,
+          provider_name: provider,
+          api_key: apiKey,
+        };
+        console.log(`Attempting enhancement with ${provider}:`, requestBody);
+        try {
+          const response = await fetch('/api/enhancer', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(requestBody),
+          });
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+          }
+          const data = await response.json();
+          console.log(`Enhanced prompt result from ${provider}:`, data);
+          setInput(data.enhanced || input); // Use enhanced text or fallback to original
+          scrollTextArea();
+          return; // Exit on first success
+        } catch (err) {
+          console.error(`Enhance prompt failed with ${provider}:`, err, 'Request:', requestBody);
         }
-        const data = await response.json();
-        console.log('Enhanced prompt result:', data);
-        setInput(data.enhanced || input); // Fallback to original if no enhancement
-        scrollTextArea();
-      } catch (err) {
-        console.error('Enhance prompt failed:', err, 'Request:', requestBody);
-        toast.error('Failed to enhance prompt: ' + err.message);
       }
+      toast.error('Failed to enhance prompt with any available provider.');
     };
 
     return (
@@ -539,7 +554,7 @@ export const ChatImpl = memo(
             content: parseMessages ? parsedMessages[i] || '' : 'Parsing unavailable', // Safe fallback
           };
         })}
-        enhancePrompt={enhancePromptWithDebug} // Use the custom enhance function
+        enhancePrompt={enhancePromptWithFlexibility} // Use flexible enhancement function
         uploadedFiles={uploadedFiles}
         setUploadedFiles={setUploadedFiles}
         imageDataList={imageDataList}
