@@ -77,7 +77,7 @@ export function Chat() {
 const processSampledMessages = createSampler(
   (options) => {
     const { messages, initialMessages, isLoading, parseMessages, storeMessageHistory } = options;
-    parseMessages(messages, isLoading);
+    parseMessages && parseMessages(messages, isLoading); // Use optional chaining
     if (messages.length > initialMessages.length) {
       storeMessageHistory(messages).catch((error) => toast.error(error.message));
     }
@@ -209,6 +209,7 @@ export const ChatImpl = memo(
       }
     }, [model, provider, searchParams]);
 
+    const { parsedMessages, parseMessages = null } = useMessageParser(); // Default to null if undefined
     const { enhancingPrompt, promptEnhanced, enhancePrompt, resetEnhancer } = usePromptEnhancer();
 
     const TEXTAREA_MAX_HEIGHT = chatStarted ? 400 : 200;
@@ -218,14 +219,15 @@ export const ChatImpl = memo(
     }, []);
 
     useEffect(() => {
+      console.log('parseMessages:', parseMessages); // Debug the value
       processSampledMessages({
         messages,
         initialMessages,
         isLoading,
-        parseMessages,
+        parseMessages: parseMessages || ((messages, isLoading) => messages), // Fallback function
         storeMessageHistory,
       });
-    }, [messages, isLoading, parseMessages]);
+    }, [messages, isLoading, parseMessages, storeMessageHistory]);
 
     const scrollTextArea = () => {
       const textarea = textareaRef.current;
@@ -482,7 +484,7 @@ export const ChatImpl = memo(
           }
           return {
             ...message,
-            content: parsedMessages[i] || '',
+            content: parseMessages && typeof parseMessages === 'function' ? (parseMessages[i] || '') : parsedMessages[i] || '',
           };
         })}
         enhancePrompt={() => {
