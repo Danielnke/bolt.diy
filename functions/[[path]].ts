@@ -8,16 +8,29 @@ export const onRequest = async (context) => {
   const { request, env } = context;
   const url = new URL(request.url);
 
-  // Handle /api/save-chat
+  // Save chat message with optional image to R2
   if (url.pathname === '/api/save-chat' && request.method === 'POST') {
     try {
-      const { message, sender, model } = await request.json();
+      const { message, sender, model, image } = await request.json();
+      let imageUrl = null;
+
+      // If an image is provided, upload it to R2
+      if (image) {
+        const key = `chat-image-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+        await env.BUCKET.put(key, Buffer.from(image, 'base64'), {
+          httpMetadata: { contentType: 'image/jpeg' }, // Adjust based on image type if needed
+        });
+        // Note: R2 doesn’t provide public URLs by default; use a custom domain or proxy if needed
+        imageUrl = `r2://${key}`; // Placeholder; adjust to your access method
+      }
+
       const timestamp = new Date().toISOString();
       await env.DB.prepare(
-        'INSERT INTO chat_messages (message, timestamp, sender, model) VALUES (?, ?, ?, ?)'
+        'INSERT INTO chat_messages (message, timestamp, sender, model, image_url) VALUES (?, ?, ?, ?, ?)'
       )
-        .bind(message, timestamp, sender, model || 'unknown')
+        .bind(message, timestamp, sender, model || 'unknown', imageUrl)
         .run();
+
       return new Response('Chat saved', { status: 200 });
     } catch (error) {
       console.error('Error saving chat:', error);
@@ -25,7 +38,7 @@ export const onRequest = async (context) => {
     }
   }
 
-  // Handle /api/get-chats
+  // Get all chat messages
   if (url.pathname === '/api/get-chats') {
     try {
       const result = await env.DB.prepare('SELECT * FROM chat_messages ORDER BY timestamp ASC').all();
@@ -39,7 +52,7 @@ export const onRequest = async (context) => {
     }
   }
 
-  // Pass all other requests to Remix handler
+  // Pass other requests to Remix handler
   return createPagesFunctionHandler({
     build: serverBuild as unknown as ServerBuild,
   })(context);
