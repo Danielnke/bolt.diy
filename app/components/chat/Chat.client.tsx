@@ -109,7 +109,7 @@ export const ChatImpl = memo(
 
     const [model, setModel] = useState(() => {
       const savedModel = Cookies.get('selectedModel');
-      return savedModel || DEFAULT_MODEL;
+      return savedModel || 'xai/grok-4o'; // Default to free Grok model
     });
     const [provider, setProvider] = useState(() => {
       const savedProvider = Cookies.get('selectedProvider');
@@ -395,7 +395,7 @@ export const ChatImpl = memo(
               })),
             ] as any,
           });
-          workbenchStore.resetAllFileModifications();
+          workbenchStore.resetAllFileModifcations();
         } else {
           appendResponse = await append({
             role: 'user',
@@ -453,6 +453,22 @@ export const ChatImpl = memo(
     };
 
     const providerName = provider?.name?.toLowerCase() || 'openrouter'; // Lowercase for consistency
+    const validProviders = ['openrouter', 'anthropic', 'openai']; // Define valid providers
+
+    // Set OpenRouter API key from environment variable or prompt
+    useEffect(() => {
+      if (providerName === 'openrouter' && !apiKeys['openrouter']) {
+        const openRouterKey = process.env.OPENROUTER_API_KEY || prompt('Please enter your OpenRouter API key:');
+        if (openRouterKey) {
+          setApiKeys((prev) => ({ ...prev, openrouter: openRouterKey }));
+          Cookies.set('apiKeys', JSON.stringify({ ...apiKeys, openrouter: openRouterKey }), { expires: 30 });
+        }
+      }
+    }, [providerName, apiKeys]);
+
+    // Restrict to free OpenRouter models
+    const validModels = ['xai/grok-4o', 'google/gemini-2.0-flash-thinking-exp-1219:free'];
+    const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to free Grok
 
     return (
       <BaseChat
@@ -490,16 +506,22 @@ export const ChatImpl = memo(
           };
         })}
         enhancePrompt={() => {
+          if (!input.trim()) {
+            toast.error('Please enter a prompt to enhance');
+            return;
+          }
           console.log(
             'Enhancing prompt with input:',
             input,
             'Model:',
-            model,
+            finalModel,
             'Provider:',
             providerName,
             'API Keys:',
             apiKeys
           );
+          // Fallback to openrouter if provider isn’t valid
+          const finalProvider = validProviders.includes(providerName) ? providerName : 'openrouter';
           enhancePrompt(
             input,
             (enhancedInput) => {
@@ -507,15 +529,15 @@ export const ChatImpl = memo(
               setInput(enhancedInput);
               scrollTextArea();
             },
-            model,
-            providerName, // Use lowercase providerName
+            finalModel, // Use only free models
+            finalProvider, // Use finalProvider with fallback
             apiKeys
           ).catch((err) => {
             console.error(
               'Enhance prompt failed:',
               err,
               'Request:',
-              { input, model, provider: providerName, apiKeys }
+              { input, model: finalModel, provider: finalProvider, apiKeys }
             );
             toast.error('Failed to enhance prompt: ' + err.message);
           });
