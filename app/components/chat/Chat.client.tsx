@@ -419,7 +419,7 @@ export const ChatImpl = memo(
 
     // Define supported providers
     const supportedProviders = ['openrouter', 'anthropic', 'openai'];
-    const providerName = provider?.name?.toLowerCase() || 'openrouter'; // Default to openrouter if not set
+    const providerName = provider?.name?.toLowerCase() || 'openrouter'; // Default to openrouter
 
     // Set API keys dynamically based on provider
     useEffect(() => {
@@ -442,7 +442,8 @@ export const ChatImpl = memo(
     ];
     const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to a free model
 
-    const enhancePromptWithMultipleProviders = async () => {
+    // Optimized enhancePrompt to stay within free plan limits
+    const enhancePromptOptimized = async () => {
       if (!input?.trim()) {
         toast.error('Please enter a prompt to enhance');
         return;
@@ -450,9 +451,7 @@ export const ChatImpl = memo(
 
       const availableProviders = [
         { name: 'openrouter', apiKey: apiKeys['openrouter'] || process.env.OPENROUTER_API_KEY || '' },
-        { name: 'anthropic', apiKey: apiKeys['anthropic'] || process.env.ANTHROPIC_API_KEY || '' },
-        { name: 'openai', apiKey: apiKeys['openai'] || process.env.OPENAI_API_KEY || '' },
-      ].filter((p) => p.apiKey && supportedProviders.includes(p.name));
+      ].filter((p) => p.apiKey); // Limit to 1 provider to avoid subrequest issues
 
       if (availableProviders.length === 0) {
         toast.error('No valid providers with API keys configured');
@@ -489,12 +488,12 @@ export const ChatImpl = memo(
             provider,
             model: finalModel,
           });
-          return; // Exit on first successful enhancement
+          return;
         } catch (err) {
           console.error(`Enhance prompt failed with ${provider}:`, err, 'Request:', requestBody);
         }
       }
-      toast.error('Failed to enhance prompt with any available provider.');
+      toast.error('Failed to enhance prompt with available provider.');
     };
 
     return (
@@ -535,7 +534,7 @@ export const ChatImpl = memo(
             content: parsedMessages[i] || '',
           };
         })}
-        enhancePrompt={enhancePromptWithMultipleProviders} // Use enhanced function
+        enhancePrompt={enhancePromptOptimized} // Use optimized enhancement function
         uploadedFiles={uploadedFiles}
         setUploadedFiles={setUploadedFiles}
         imageDataList={imageDataList}
