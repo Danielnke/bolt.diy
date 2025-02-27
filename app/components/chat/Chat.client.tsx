@@ -23,6 +23,8 @@ import type { ProviderInfo } from '~/types/model';
 import { useSearchParams } from '@remix-run/react';
 import { createSampler } from '~/utils/sampler';
 import { getTemplates, selectStarterTemplate } from '~/utils/selectStarterTemplate';
+import { logStore } from '~/lib/stores/logs';
+import { streamingState } from '~/lib/stores/streaming';
 
 const toastAnimation = cssTransition({
   enter: 'animated fadeInRight',
@@ -75,7 +77,13 @@ export function Chat() {
 }
 
 const processSampledMessages = createSampler(
-  (options) => {
+  (options: {
+    messages: Message[];
+    initialMessages: Message[];
+    isLoading: boolean;
+    parseMessages: (messages: Message[], isLoading: boolean) => void;
+    storeMessageHistory: (messages: Message[]) => Promise<void>;
+  }) => {
     const { messages, initialMessages, isLoading, parseMessages, storeMessageHistory } = options;
     parseMessages(messages, isLoading);
     if (messages.length > initialMessages.length) {
@@ -109,7 +117,7 @@ export const ChatImpl = memo(
 
     const [model, setModel] = useState(() => {
       const savedModel = Cookies.get('selectedModel');
-      return savedModel || 'xai/grok-4o'; // Default to free Grok model
+      return savedModel || DEFAULT_MODEL;
     });
     const [provider, setProvider] = useState(() => {
       const savedProvider = Cookies.get('selectedProvider');
@@ -122,76 +130,60 @@ export const ChatImpl = memo(
 
     const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
 
-    const { messages, isLoading, input, handleInputChange, setInput, stop, append, setMessages, reload, error } =
-      useChat({
-        api: '/api/chat',
-        body: {
-          apiKeys,
-          files,
-          promptId,
-          contextOptimization: contextOptimizationEnabled,
-        },
-        sendExtraMessageFields: true,
-        onError: (e) => {
-          logger.error('Request failed\n\n', e, error);
-          toast.error(
-            'There was an error processing your request: ' + (e.message ? e.message : 'No details were returned'),
-          );
-        },
-        onFinish: async (message) => {
-          console.log('Assistant message:', message); // Debug for append response
-          if (message.role === 'assistant') {
-            await saveChat(message.content, 'bot', model, null);
-          }
-        },
-        initialMessages,
-        initialInput: Cookies.get(PROMPT_COOKIE_KEY) || '',
-      });
-
-    // Load chat history from D1 on mount
-    useEffect(() => {
-      const loadChats = async () => {
-        try {
-          const response = await fetch('/api/get-chats');
-          const chats = await response.json();
-          const formattedChats = chats.map((chat) => ({
-            id: chat.id.toString(),
-            role: chat.sender === 'user' ? 'user' : 'assistant',
-            content: chat.image_url
-              ? [
-                  { type: 'text', text: chat.message },
-                  { type: 'image', image: chat.image_url },
-                ]
-              : chat.message,
-          }));
-          setMessages(formattedChats);
-        } catch (err) {
-          console.error('Failed to load chats:', err);
-          toast.error('Could not load chat history');
-        }
-      };
-      loadChats();
-    }, [setMessages]);
-
-    // Save chat message to D1 and R2 with debugging logs
-    const saveChat = async (message: string, sender: string, model: string, image: string | null = null) => {
-      console.log('Attempting to save chat:', { message, sender, model, image });
-      try {
-        const response = await fetch('/api/save-chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message, sender, model, image }),
+    const {
+      messages,
+      isLoading,
+      input,
+      handleInputChange,
+      setInput,
+      stop,
+      append,
+      setMessages,
+      reload,
+      error,
+      data: chatData,
+      setData,
+    } = useChat({
+      api: '/api/chat',
+      body: {
+        apiKeys,
+        files,
+        promptId,
+        contextOptimization: contextOptimizationEnabled,
+      },
+      sendExtraMessageFields: true,
+      onError: (e) => {
+        logger.error('Request failed\n\n', e, error);
+        logStore.logError('Chat request failed', e, {
+          component: 'Chat',
+          action: 'request',
+          error: e.message,
         });
-        const responseText = await response.text();
-        console.log('Save chat response:', response.status, responseText);
-        if (!response.ok) {
-          throw new Error(`API error: ${response.status} - ${responseText}`);
+        toast.error(
+          'There was an error processing your request: ' + (e.message ? e.message : 'No details were returned'),
+        );
+      },
+      onFinish: (message, response) => {
+        const usage = response.usage;
+        setData(undefined);
+
+        if (usage) {
+          console.log('Token usage:', usage);
+          logStore.logProvider('Chat response completed', {
+            component: 'Chat',
+            action: 'response',
+            model,
+            provider: provider.name,
+            usage,
+            messageLength: message.content.length,
+          });
         }
-      } catch (err) {
-        console.error('Failed to save chat:', err);
-        toast.error('Could not save chat message: ' + err.message);
-      }
-    };
+
+        logger.debug('Finished streaming');
+      },
+      initialMessages,
+      initialInput: Cookies.get(PROMPT_COOKIE_KEY) || '',
+    });
 
     useEffect(() => {
       const prompt = searchParams.get('prompt');
@@ -210,8 +202,8 @@ export const ChatImpl = memo(
       }
     }, [model, provider, searchParams]);
 
-    const { parsedMessages, parseMessages = null } = useMessageParser(); // Safe default for parseMessages
     const { enhancingPrompt, promptEnhanced, enhancePrompt, resetEnhancer } = usePromptEnhancer();
+    const { parsedMessages, parseMessages } = useMessageParser();
 
     const TEXTAREA_MAX_HEIGHT = chatStarted ? 400 : 200;
 
@@ -224,10 +216,10 @@ export const ChatImpl = memo(
         messages,
         initialMessages,
         isLoading,
-        parseMessages: parseMessages || ((messages, isLoading) => messages), // Fallback
+        parseMessages,
         storeMessageHistory,
       });
-    }, [messages, isLoading, parseMessages, storeMessageHistory]);
+    }, [messages, isLoading, parseMessages]);
 
     const scrollTextArea = () => {
       const textarea = textareaRef.current;
@@ -240,6 +232,12 @@ export const ChatImpl = memo(
       stop();
       chatStore.setKey('aborted', true);
       workbenchStore.abortAllActions();
+      logStore.logProvider('Chat response aborted', {
+        component: 'Chat',
+        action: 'abort',
+        model,
+        provider: provider.name,
+      });
     };
 
     useEffect(() => {
@@ -263,44 +261,23 @@ export const ChatImpl = memo(
     };
 
     const sendMessage = async (_event: React.UIEvent, messageInput?: string) => {
-      const _input = messageInput || input;
-      if (_input.length === 0 || isLoading) return;
+      const messageContent = messageInput || input;
 
-      console.log('sendMessage called with input:', _input);
+      if (!messageContent?.trim()) return;
 
-      await workbenchStore.saveAllFiles();
-      if (error != null) setMessages(messages.slice(0, -1));
+      if (isLoading) {
+        abort();
+        return;
+      }
 
-      const fileModifications = workbenchStore.getFileModifcations();
-      chatStore.setKey('aborted', false);
       runAnimation();
 
-      const image = imageDataList.length > 0 ? imageDataList[0] : null;
-      await saveChat(_input, 'user', model, image);
+      if (!chatStarted) {
+        setFakeLoading(true);
 
-      console.log('Appending message to LLM');
-      try {
-        if (!chatStarted && _input && autoSelectTemplate) {
-          setFakeLoading(true);
-          setMessages([
-            {
-              id: `${new Date().getTime()}`,
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
-                },
-                ...imageDataList.map((imageData) => ({
-                  type: 'image',
-                  image: imageData,
-                })),
-              ] as any,
-            },
-          ]);
-
+        if (autoSelectTemplate) {
           const { template, title } = await selectStarterTemplate({
-            message: _input,
+            message: messageContent,
             model,
             provider,
           });
@@ -321,7 +298,7 @@ export const ChatImpl = memo(
                 {
                   id: `${new Date().getTime()}`,
                   role: 'user',
-                  content: _input,
+                  content: messageContent,
                 },
                 {
                   id: `${new Date().getTime()}`,
@@ -337,80 +314,68 @@ export const ChatImpl = memo(
               ]);
               reload();
               setFakeLoading(false);
-              await saveChat(assistantMessage, 'bot', model, null);
-              return;
-            } else {
-              setMessages([
-                {
-                  id: `${new Date().getTime()}`,
-                  role: 'user',
-                  content: [
-                    {
-                      type: 'text',
-                      text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
-                    },
-                    ...imageDataList.map((imageData) => ({
-                      type: 'image',
-                      image: imageData,
-                    })),
-                  ] as any,
-                },
-              ]);
-              reload();
-              setFakeLoading(false);
               return;
             }
-          } else {
-            setMessages([
-              {
-                id: `${new Date().getTime()}`,
-                role: 'user',
-                content: [
-                  {
-                    type: 'text',
-                    text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}`,
-                  },
-                  ...imageDataList.map((imageData) => ({
-                    type: 'image',
-                    image: imageData,
-                  })),
-                ] as any,
-              },
-            ]);
-            reload();
-            setFakeLoading(false);
-            return;
           }
         }
 
-        let appendResponse;
-        if (fileModifications !== undefined) {
-          appendResponse = await append({
+        setMessages([
+          {
+            id: `${new Date().getTime()}`,
             role: 'user',
             content: [
-              { type: 'text', text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}` },
+              {
+                type: 'text',
+                text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
+              },
               ...imageDataList.map((imageData) => ({
                 type: 'image',
                 image: imageData,
               })),
             ] as any,
-          });
-          workbenchStore.resetAllFileModifcations();
-        } else {
-          appendResponse = await append({
-            role: 'user',
-            content: [
-              { type: 'text', text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}` },
-              ...imageDataList.map((imageData) => ({
-                type: 'image',
-                image: imageData,
-              })),
-            ] as any,
-          });
-        }
-        console.log('Append response:', appendResponse);
-      } catch (appendError) {
-        console.error('Append failed:', appendError);
+          },
+        ]);
+        reload();
+        setFakeLoading(false);
+        return;
+      }
+
+      if (error != null) {
+        setMessages(messages.slice(0, -1));
+      }
+
+      const fileModifications = workbenchStore.getFileModifcations();
+      chatStore.setKey('aborted', false);
+
+      if (fileModifications !== undefined) {
+        append({
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
+            },
+            ...imageDataList.map((imageData) => ({
+              type: 'image',
+              image: imageData,
+            })),
+          ] as any,
+        });
+        workbenchStore.resetAllFileModifications();
+      } else {
+        append({
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
+            },
+            ...imageDataList.map((imageData) => ({
+              type: 'image',
+              image: imageData,
+            })),
+          ] as any,
+        });
       }
 
       setInput('');
@@ -452,12 +417,13 @@ export const ChatImpl = memo(
       Cookies.set('selectedProvider', newProvider.name, { expires: 30 });
     };
 
-    const providerName = provider?.name?.toLowerCase() || 'openrouter'; // Lowercase for consistency
-    const validProviders = ['openrouter', 'anthropic', 'openai']; // Allow all specified providers
+    // Define supported providers
+    const supportedProviders = ['openrouter', 'anthropic', 'openai'];
+    const providerName = provider?.name?.toLowerCase() || 'openrouter'; // Default to openrouter if not set
 
-    // Set API key from environment variable or prompt for any valid provider
+    // Set API keys dynamically based on provider
     useEffect(() => {
-      if (!apiKeys[providerName] && validProviders.includes(providerName)) {
+      if (!apiKeys[providerName] && supportedProviders.includes(providerName)) {
         const envKey = process.env[`${providerName.toUpperCase()}_API_KEY`] || '';
         const promptedKey = envKey || prompt(`Please enter your ${providerName} API key:`);
         if (promptedKey) {
@@ -467,25 +433,31 @@ export const ChatImpl = memo(
       }
     }, [providerName, apiKeys]);
 
-    // Allow flexible model selection (no strict free model restriction unless specified)
+    // Allow all models from supported providers
     const validModels = [
-      'xai/grok-4o',
-      'google/gemini-2.0-flash-thinking-exp-1219:free',
-      'anthropic/claude-3.5-sonnet',
-      'openai/gpt-4o-mini',
-    ]; // Include popular models from all providers
-    const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to Grok if invalid
+      'xai/grok-4o', // OpenRouter free model
+      'google/gemini-2.0-flash-thinking-exp-1219:free', // OpenRouter free model
+      'anthropic/claude-3.5-sonnet', // Anthropic model
+      'openai/gpt-4o-mini', // OpenAI model
+    ];
+    const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to a free model
 
-    const enhancePromptWithFlexibility = async () => {
-      if (!input.trim()) {
+    const enhancePromptWithMultipleProviders = async () => {
+      if (!input?.trim()) {
         toast.error('Please enter a prompt to enhance');
         return;
       }
+
       const availableProviders = [
         { name: 'openrouter', apiKey: apiKeys['openrouter'] || process.env.OPENROUTER_API_KEY || '' },
         { name: 'anthropic', apiKey: apiKeys['anthropic'] || process.env.ANTHROPIC_API_KEY || '' },
         { name: 'openai', apiKey: apiKeys['openai'] || process.env.OPENAI_API_KEY || '' },
-      ].filter((p) => p.apiKey); // Filter out providers with no API key
+      ].filter((p) => p.apiKey && supportedProviders.includes(p.name));
+
+      if (availableProviders.length === 0) {
+        toast.error('No valid providers with API keys configured');
+        return;
+      }
 
       for (const { name: provider, apiKey } of availableProviders) {
         const requestBody = {
@@ -494,7 +466,7 @@ export const ChatImpl = memo(
           provider_name: provider,
           api_key: apiKey,
         };
-        console.log(`Attempting enhancement with ${provider}:`, requestBody);
+        console.log(`Attempting to enhance prompt with ${provider}:`, requestBody);
         try {
           const response = await fetch('/api/enhancer', {
             method: 'POST',
@@ -509,9 +481,15 @@ export const ChatImpl = memo(
           }
           const data = await response.json();
           console.log(`Enhanced prompt result from ${provider}:`, data);
-          setInput(data.enhanced || input); // Use enhanced text or fallback to original
+          setInput(data.enhanced || input); // Use 'enhanced' or fallback to original
           scrollTextArea();
-          return; // Exit on first success
+          logStore.log('Prompt enhanced successfully', {
+            component: 'Chat',
+            action: 'enhancePrompt',
+            provider,
+            model: finalModel,
+          });
+          return; // Exit on first successful enhancement
         } catch (err) {
           console.error(`Enhance prompt failed with ${provider}:`, err, 'Request:', requestBody);
         }
@@ -527,6 +505,9 @@ export const ChatImpl = memo(
         showChat={showChat}
         chatStarted={chatStarted}
         isStreaming={isLoading || fakeLoading}
+        onStreamingChange={(streaming) => {
+          streamingState.set(streaming);
+        }}
         enhancingPrompt={enhancingPrompt}
         promptEnhanced={promptEnhanced}
         sendMessage={sendMessage}
@@ -551,16 +532,17 @@ export const ChatImpl = memo(
           }
           return {
             ...message,
-            content: parseMessages ? parsedMessages[i] || '' : 'Parsing unavailable', // Safe fallback
+            content: parsedMessages[i] || '',
           };
         })}
-        enhancePrompt={enhancePromptWithFlexibility} // Use flexible enhancement function
+        enhancePrompt={enhancePromptWithMultipleProviders} // Use enhanced function
         uploadedFiles={uploadedFiles}
         setUploadedFiles={setUploadedFiles}
         imageDataList={imageDataList}
         setImageDataList={setImageDataList}
         actionAlert={actionAlert}
         clearAlert={() => workbenchStore.clearAlert()}
+        data={chatData}
       />
     );
   },
