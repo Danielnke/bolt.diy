@@ -61,82 +61,81 @@ async function cleanupOldKVData(env: any) {
 
 // Handle POST requests (send/save chats and files)
 export async function action({ context, request }: ActionFunctionArgs) {
-  if (request.method === 'POST') {
-    return chatPostAction({ context, request });
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
   }
-  return new Response('Method not allowed', { status: 405 });
-}
 
-// Handle GET requests (retrieve chats)
-export async function loader({ context, request }: LoaderFunctionArgs) {
-  if (request.method === 'GET') {
-    return chatGetAction({ context, request });
-  }
-  return new Response('Method not allowed', { status: 405 });
-}
-
-async function chatPostAction({ context, request }: ActionFunctionArgs) {
   const env = context.cloudflare?.env;
 
   // Run cleanup on first POST request (optional: run once or on demand)
-  if (!context.cloudflare?.env.CLEANUP_DONE) {
+  if (!env.CLEANUP_DONE) {
     await cleanupOldD1Data(env);
     await cleanupOldKVData(env);
-    context.cloudflare.env.CLEANUP_DONE = true; // Prevent repeated cleanup
+    env.CLEANUP_DONE = true; // Prevent repeated cleanup
   }
 
-  const { messages, files, promptId, contextOptimization, projectId } = await request.json<{
-    messages: Messages;
-    files: any;
-    promptId?: string;
-    contextOptimization: boolean;
-    projectId: string;
-  }>();
-
-  const cookieHeader = request.headers.get('Cookie');
-  const apiKeys = JSON.parse(parseCookies(cookieHeader || '').apiKeys || '{}');
-  const providerSettings: Record<string, IProviderSetting> = JSON.parse(
-    parseCookies(cookieHeader || '').providers || '{}',
-  );
-
-  const stream = new SwitchableStream();
-
-  const cumulativeUsage = {
-    completionTokens: 0,
-    promptTokens: 0,
-    totalTokens: 0,
-  };
-  const encoder: TextEncoder = new TextEncoder();
-  let progressCounter: number = 1;
-
   try {
-    const totalMessageContent = messages.reduce((acc, message) => acc + (message.content as string), '');
-    logger.debug(`Total message length: ${totalMessageContent.split(' ').length}, words for project ${projectId}`);
+    // Parse the request body
+    const { messages, files, promptId, contextOptimization, projectId } = await request.json<{
+      messages: Messages;
+      files: any;
+      promptId?: string;
+      contextOptimization: boolean;
+      projectId: string;
+    }>();
+
+    if (!projectId) {
+      logger.error('Missing projectId in request');
+      return new Response('Missing projectId', { status: 400 });
+    }
+
+    logger.info(`Processing chat request for project ${projectId}`);
 
     // Save chat messages to D1
     for (const message of messages) {
+      const content = message.content[0]?.text || (typeof message.content === 'string' ? message.content : JSON.stringify(message.content));
+      const role = message.role || 'unknown';
+      const model = message.model || 'default-model'; // Default or extract from message if available
+
       await env.DB.prepare(`
         INSERT INTO chat_messages (message, sender, model, project_id, timestamp)
         VALUES (?, ?, ?, ?, ?)
-      `).bind(
-        message.content[0]?.text || (typeof message.content === 'string' ? message.content : JSON.stringify(message.content)),
-        message.role,
-        'default-model', // Replace with your model if available
-        projectId,
-        Date.now()
-      ).run();
+      `)
+        .bind(content, role, model, projectId, Date.now())
+        .run();
     }
 
     // Store files in Cloudflare KV under PROJECT_<projectId>
     if (files && Object.keys(files).length > 0) {
       const namespace = `PROJECT_${projectId}`;
       for (const [fileName, fileContent] of Object.entries(files)) {
-        await env.PROJECT_FILES.put(
-          `${namespace}/${fileName}`,
-          JSON.stringify(fileContent)
-        );
+        try {
+          await env.PROJECT_FILES.put(
+            `${namespace}/${fileName}`,
+            JSON.stringify(fileContent)
+          );
+        } catch (error) {
+          logger.error(`Failed to store file ${fileName} in KV for project ${projectId}:`, error);
+          throw new Error(`Failed to store file: ${error.message}`);
+        }
       }
     }
+
+    const cookieHeader = request.headers.get('Cookie');
+    const apiKeys = JSON.parse(parseCookies(cookieHeader || '').apiKeys || '{}');
+    const providerSettings: Record<string, IProviderSetting> = JSON.parse(
+      parseCookies(cookieHeader || '').providers || '{}',
+    );
+
+    const stream = new SwitchableStream();
+
+    const cumulativeUsage = {
+      completionTokens: 0,
+      promptTokens: 0,
+      totalTokens: 0,
+    };
+    const encoder: TextEncoder = new TextEncoder();
+    let progressCounter: number = 1;
 
     const dataStream = createDataStream({
       async execute(dataStream) {
@@ -146,7 +145,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
 
         if (filePaths.length > 0 && contextOptimization) {
           dataStream.writeData('HI ');
-          logger.debug('Generating Chat Summary for project ' + projectId);
+          logger.debug(`Generating Chat Summary for project ${projectId}`);
           dataStream.writeMessageAnnotation({
             type: 'progress',
             value: progressCounter++,
@@ -167,7 +166,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
             projectId, // Pass projectId for context
             onFinish(resp) {
               if (resp.usage) {
-                logger.debug('createSummary token usage for project ' + projectId, JSON.stringify(resp.usage));
+                logger.debug(`createSummary token usage for project ${projectId}`, JSON.stringify(resp.usage));
                 cumulativeUsage.completionTokens += resp.usage.completionTokens || 0;
                 cumulativeUsage.promptTokens += resp.usage.promptTokens || 0;
                 cumulativeUsage.totalTokens += resp.usage.totalTokens || 0;
@@ -183,7 +182,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
           } as ContextAnnotation);
 
           // Update context buffer
-          logger.debug('Updating Context Buffer for project ' + projectId);
+          logger.debug(`Updating Context Buffer for project ${projectId}`);
           dataStream.writeMessageAnnotation({
             type: 'progress',
             value: progressCounter++,
@@ -205,7 +204,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
             projectId, // Pass projectId for scoping
             onFinish(resp) {
               if (resp.usage) {
-                logger.debug('selectContext token usage for project ' + projectId, JSON.stringify(resp.usage));
+                logger.debug(`selectContext token usage for project ${projectId}`, JSON.stringify(resp.usage));
                 cumulativeUsage.completionTokens += resp.usage.completionTokens || 0;
                 cumulativeUsage.promptTokens += resp.usage.promptTokens || 0;
                 cumulativeUsage.totalTokens += resp.usage.totalTokens || 0;
@@ -214,7 +213,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
           });
 
           if (filteredFiles) {
-            logger.debug(`files in context : ${JSON.stringify(Object.keys(filteredFiles))} for project ${projectId}`);
+            logger.debug(`Files in context: ${JSON.stringify(Object.keys(filteredFiles))} for project ${projectId}`);
           }
 
           dataStream.writeMessageAnnotation({
@@ -237,14 +236,14 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
             message: 'Context Buffer Updated',
             projectId, // Include projectId for scoping
           } as ProgressAnnotation);
-          logger.debug('Context Buffer Updated for project ' + projectId);
+          logger.debug(`Context Buffer Updated for project ${projectId}`);
         }
 
-        // Stream the text
+        // Stream the text response
         const options: StreamingOptions = {
           toolChoice: 'none',
           onFinish: async ({ text: content, finishReason, usage }) => {
-            logger.debug('usage for project ' + projectId, JSON.stringify(usage));
+            logger.debug(`Usage for project ${projectId}`, JSON.stringify(usage));
 
             if (usage) {
               cumulativeUsage.completionTokens += usage.completionTokens || 0;
@@ -332,7 +331,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
       new TransformStream({
         transform: (chunk, controller) => {
           const str = typeof chunk === 'string' ? chunk : JSON.stringify(chunk);
-          controller.enqueue(encoder.encode(str));
+          controller.enqueue(new TextEncoder().encode(str));
         },
       }),
     );
@@ -348,26 +347,21 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
     });
   } catch (error: any) {
     logger.error(`Error in chatPostAction for project ${projectId}:`, error);
-
-    if (error.message?.includes('API key')) {
-      return new Response('Invalid or missing API key', {
-        status: 401,
-        statusText: 'Unauthorized',
-      });
-    }
-
-    return new Response(null, {
-      status: 500,
-      statusText: 'Internal Server Error',
-    });
+    return new Response(`Internal Server Error: ${error.message || 'Unknown error'}`, { status: 500 });
   }
 }
 
-async function chatGetAction({ context, request }: LoaderFunctionArgs) {
+// Handle GET requests (retrieve chats)
+export async function loader({ context, request }: LoaderFunctionArgs) {
+  if (request.method !== 'GET') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
   const url = new URL(request.url);
   const projectId = url.searchParams.get('projectId');
 
   if (!projectId) {
+    logger.error('Missing projectId in GET request');
     return new Response('Missing projectId', { status: 400 });
   }
 
@@ -376,10 +370,10 @@ async function chatGetAction({ context, request }: LoaderFunctionArgs) {
       SELECT * FROM chat_messages WHERE project_id = ?
     `).bind(projectId).all();
 
-    logger.debug(`Retrieved ${results.length} chats for project ${projectId}`);
+    logger.info(`Retrieved ${results.length} chats for project ${projectId}`);
     return new Response(JSON.stringify(results), { status: 200 });
   } catch (error) {
     logger.error(`Failed to get chats for project ${projectId}:`, error);
-    return new Response('Failed to retrieve chats', { status: 500 });
+    return new Response(`Failed to retrieve chats: ${error.message || 'Unknown error'}`, { status: 500 });
   }
 }
