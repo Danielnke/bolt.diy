@@ -111,13 +111,14 @@ export const ChatImpl = memo(
     const [imageDataList, setImageDataList] = useState<string[]>([]);
     const [searchParams, setSearchParams] = useSearchParams();
     const [fakeLoading, setFakeLoading] = useState(false);
+    const [projectId, setProjectId] = useState(`project-${Date.now()}`); // Unique ID for each project
     const files = useStore(workbenchStore.files);
     const actionAlert = useStore(workbenchStore.alert);
     const { activeProviders, promptId, autoSelectTemplate, contextOptimizationEnabled } = useSettings();
 
     const [model, setModel] = useState(() => {
       const savedModel = Cookies.get('selectedModel');
-      return savedModel || DEFAULT_MODEL;
+      return savedModel || 'xai/grok-4o'; // Default to free Grok model
     });
     const [provider, setProvider] = useState(() => {
       const savedProvider = Cookies.get('selectedProvider');
@@ -314,6 +315,7 @@ export const ChatImpl = memo(
               ]);
               reload();
               setFakeLoading(false);
+              await saveChat(assistantMessage.content, 'bot', model, null);
               return;
             }
           }
@@ -378,6 +380,7 @@ export const ChatImpl = memo(
         });
       }
 
+      await saveChat(messageContent, 'user', model, imageDataList.length > 0 ? imageDataList[0] : null);
       setInput('');
       Cookies.remove(PROMPT_COOKIE_KEY);
       setUploadedFiles([]);
@@ -442,107 +445,165 @@ export const ChatImpl = memo(
     ];
     const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to a free model
 
-    // Optimized enhancePrompt to stay within free plan limits
+    // Enhanced enhancePrompt with direct fetch, project isolation, and resource limit optimization
     const enhancePromptOptimized = async () => {
       if (!input?.trim()) {
         toast.error('Please enter a prompt to enhance');
         return;
       }
 
-      const availableProviders = [
-        { name: 'openrouter', apiKey: apiKeys['openrouter'] || process.env.OPENROUTER_API_KEY || '' },
-      ].filter((p) => p.apiKey); // Limit to 1 provider to avoid subrequest issues
-
-      if (availableProviders.length === 0) {
-        toast.error('No valid providers with API keys configured');
+      const apiKey = apiKeys[providerName] || process.env.OPENROUTER_API_KEY || '';
+      if (!apiKey) {
+        toast.error(`API key for ${providerName} is missing. Please set it in settings or environment variables.`);
         return;
       }
 
-      for (const { name: provider, apiKey } of availableProviders) {
-        const requestBody = {
-          input: input.trim(),
-          model: finalModel,
-          provider_name: provider,
-          api_key: apiKey,
-        };
-        console.log(`Attempting to enhance prompt with ${provider}:`, requestBody);
-        try {
-          const response = await fetch('/api/enhancer', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(requestBody),
-          });
-          if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
-          }
-          const data = await response.json();
-          console.log(`Enhanced prompt result from ${provider}:`, data);
-          setInput(data.enhanced || input); // Use 'enhanced' or fallback to original
-          scrollTextArea();
-          logStore.log('Prompt enhanced successfully', {
-            component: 'Chat',
-            action: 'enhancePrompt',
-            provider,
-            model: finalModel,
-          });
-          return;
-        } catch (err) {
-          console.error(`Enhance prompt failed with ${provider}:`, err, 'Request:', requestBody);
+      const requestBody = {
+        input: input.trim(),
+        model: finalModel,
+        provider_name: providerName,
+        api_key: apiKey,
+        project_id: projectId, // Include projectId to scope enhancement requests
+      };
+      console.log('Enhancing prompt with request:', requestBody);
+
+      try {
+        const response = await fetch('/api/enhancer', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
         }
+        const data = await response.json();
+        console.log('Enhanced prompt result:', data);
+        setInput(data.enhanced || input); // Use 'enhanced' or fallback to original
+        scrollTextArea();
+        logStore.log('Prompt enhanced successfully', {
+          component: 'Chat',
+          action: 'enhancePrompt',
+          provider: providerName,
+          model: finalModel,
+          projectId,
+        });
+        await saveChat(data.enhanced || input, 'system', finalModel, null); // Save enhanced prompt
+      } catch (err) {
+        console.error('Enhance prompt failed:', err, 'Request:', requestBody);
+        toast.error('Failed to enhance prompt: ' + err.message);
       }
-      toast.error('Failed to enhance prompt with available provider.');
     };
 
+    // Start a new project
+    const startNewProject = () => {
+      const newProjectId = `project-${Date.now()}`;
+      setProjectId(newProjectId);
+      setMessages([]); // Clear chat history for new project
+      logStore.log('New project started', {
+        component: 'Chat',
+        action: 'newProject',
+        projectId: newProjectId,
+      });
+    };
+
+    // Load chats specific to the project
+    const saveChat = async (message: string, sender: string, model: string, image: string | null = null) => {
+      console.log('Attempting to save chat:', { message, sender, model, image, projectId });
+      try {
+        const response = await fetch('/api/save-chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, sender, model, image, projectId }),
+        });
+        const responseText = await response.text();
+        console.log('Save chat response:', response.status, responseText);
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status} - ${responseText}`);
+        }
+      } catch (err) {
+        console.error('Failed to save chat:', err);
+        toast.error('Could not save chat message: ' + err.message);
+      }
+    };
+
+    useEffect(() => {
+      const loadChats = async () => {
+        try {
+          const response = await fetch(`/api/get-chats?projectId=${projectId}`);
+          const chats = await response.json();
+          const formattedChats = chats.map((chat) => ({
+            id: chat.id.toString(),
+            role: chat.sender === 'user' ? 'user' : 'assistant',
+            content: chat.image_url
+              ? [
+                  { type: 'text', text: chat.message },
+                  { type: 'image', image: chat.image_url },
+                ]
+              : chat.message,
+          }));
+          setMessages(formattedChats);
+        } catch (err) {
+          console.error('Failed to load chats:', err);
+          toast.error('Could not load chat history');
+        }
+      };
+      loadChats();
+    }, [projectId]);
+
     return (
-      <BaseChat
-        ref={animationScope}
-        textareaRef={textareaRef}
-        input={input}
-        showChat={showChat}
-        chatStarted={chatStarted}
-        isStreaming={isLoading || fakeLoading}
-        onStreamingChange={(streaming) => {
-          streamingState.set(streaming);
-        }}
-        enhancingPrompt={enhancingPrompt}
-        promptEnhanced={promptEnhanced}
-        sendMessage={sendMessage}
-        model={model}
-        setModel={handleModelChange}
-        provider={provider}
-        setProvider={handleProviderChange}
-        providerList={activeProviders}
-        messageRef={messageRef}
-        scrollRef={scrollRef}
-        handleInputChange={(e) => {
-          onTextareaChange(e);
-          debouncedCachePrompt(e);
-        }}
-        handleStop={abort}
-        description={description}
-        importChat={importChat}
-        exportChat={exportChat}
-        messages={messages.map((message, i) => {
-          if (message.role === 'user') {
-            return message;
-          }
-          return {
-            ...message,
-            content: parsedMessages[i] || '',
-          };
-        })}
-        enhancePrompt={enhancePromptOptimized} // Use optimized enhancement function
-        uploadedFiles={uploadedFiles}
-        setUploadedFiles={setUploadedFiles}
-        imageDataList={imageDataList}
-        setImageDataList={setImageDataList}
-        actionAlert={actionAlert}
-        clearAlert={() => workbenchStore.clearAlert()}
-        data={chatData}
-      />
+      <div className="chat-container">
+        <h1>Chat - Project: {projectId}</h1>
+        <button onClick={startNewProject}>Start New Project</button>
+        <BaseChat
+          ref={animationScope}
+          textareaRef={textareaRef}
+          input={input}
+          showChat={showChat}
+          chatStarted={chatStarted}
+          isStreaming={isLoading || fakeLoading}
+          onStreamingChange={(streaming) => {
+            streamingState.set(streaming);
+          }}
+          enhancingPrompt={enhancingPrompt}
+          promptEnhanced={promptEnhanced}
+          sendMessage={sendMessage}
+          model={model}
+          setModel={handleModelChange}
+          provider={provider}
+          setProvider={handleProviderChange}
+          providerList={activeProviders}
+          messageRef={messageRef}
+          scrollRef={scrollRef}
+          handleInputChange={(e) => {
+            onTextareaChange(e);
+            debouncedCachePrompt(e);
+          }}
+          handleStop={abort}
+          description={description}
+          importChat={importChat}
+          exportChat={exportChat}
+          messages={messages.map((message, i) => {
+            if (message.role === 'user') {
+              return message;
+            }
+            return {
+              ...message,
+              content: parsedMessages[i] || '',
+            };
+          })}
+          enhancePrompt={enhancePromptOptimized} // Use optimized enhancement function
+          uploadedFiles={uploadedFiles}
+          setUploadedFiles={setUploadedFiles}
+          imageDataList={imageDataList}
+          setImageDataList={setImageDataList}
+          actionAlert={actionAlert}
+          clearAlert={() => workbenchStore.clearAlert()}
+          data={chatData}
+        />
+      </div>
     );
   },
 );
