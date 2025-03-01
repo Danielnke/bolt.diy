@@ -92,6 +92,11 @@ export async function action({ context, request }: ActionFunctionArgs) {
       return new Response('Missing or invalid projectId or messages', { status: 400 });
     }
 
+    if (typeof projectId !== 'string' || projectId.trim() === '') {
+      logger.error(`Invalid projectId format: ${projectId}`);
+      return new Response('Invalid projectId format', { status: 400 });
+    }
+
     logger.info(`Processing chat request for project ${projectId} in bolt_diy_database`);
 
     // Save chat messages to D1 (bolt_diy_database)
@@ -100,12 +105,17 @@ export async function action({ context, request }: ActionFunctionArgs) {
       const role = message.role || 'unknown';
       const messageModel = model || 'default-model'; // Use client-provided model or default
 
+      if (!content || typeof content !== 'string' || !role || typeof role !== 'string') {
+        logger.error(`Invalid message data for project ${projectId}:`, { content, role });
+        return new Response('Invalid message content or role', { status: 400 });
+      }
+
       try {
         await env.DB.prepare(`
           INSERT INTO chat_messages (message, sender, model, project_id, timestamp)
           VALUES (?, ?, ?, ?, ?)
         `)
-          .bind(content, role, messageModel, projectId, Date.now())
+          .bind(content, role, messageModel, projectId, Date.now()) // Use INTEGER for timestamp
           .run();
       } catch (dbError) {
         logger.error(`Failed to save message to D1 for project ${projectId}:`, dbError);
