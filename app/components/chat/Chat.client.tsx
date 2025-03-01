@@ -160,7 +160,7 @@ export const ChatImpl = memo(
         files,
         promptId,
         contextOptimization: contextOptimizationEnabled,
-        projectId, // Pass projectId to API for code storage isolation
+        projectId, // Pass projectId to API for chat and code isolation
       },
       sendExtraMessageFields: true,
       onError: (e) => {
