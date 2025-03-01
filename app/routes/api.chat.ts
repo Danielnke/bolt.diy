@@ -32,6 +32,33 @@ function parseCookies(cookieHeader: string): Record<string, string> {
   return cookies;
 }
 
+// Function to clean up old D1 data (run once or on demand)
+async function cleanupOldD1Data(env: any) {
+  try {
+    const { count } = await env.DB.prepare(`
+      DELETE FROM chat_messages WHERE project_id = 'default-project'
+    `).run();
+    logger.debug(`Cleaned up ${count} old chat messages with project_id = 'default-project'`);
+  } catch (error) {
+    logger.error('Failed to clean up old D1 data:', error);
+  }
+}
+
+// Function to clean up old KV data (non-project-specific keys)
+async function cleanupOldKVData(env: any) {
+  try {
+    const keys = await env.PROJECT_FILES.list({ prefix: '' }); // List all keys
+    for (const key of keys.keys) {
+      if (!key.name.startsWith('PROJECT_') || !key.name.includes('/')) {
+        await env.PROJECT_FILES.delete(key.name);
+        logger.debug(`Deleted old KV key: ${key.name}`);
+      }
+    }
+  } catch (error) {
+    logger.error('Failed to clean up old KV data:', error);
+  }
+}
+
 // Handle POST requests (send/save chats and files)
 export async function action({ context, request }: ActionFunctionArgs) {
   if (request.method === 'POST') {
@@ -49,6 +76,15 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
 }
 
 async function chatPostAction({ context, request }: ActionFunctionArgs) {
+  const env = context.cloudflare?.env;
+
+  // Run cleanup on first POST request (optional: run once or on demand)
+  if (!context.cloudflare?.env.CLEANUP_DONE) {
+    await cleanupOldD1Data(env);
+    await cleanupOldKVData(env);
+    context.cloudflare.env.CLEANUP_DONE = true; // Prevent repeated cleanup
+  }
+
   const { messages, files, promptId, contextOptimization, projectId } = await request.json<{
     messages: Messages;
     files: any;
@@ -79,7 +115,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
 
     // Save chat messages to D1
     for (const message of messages) {
-      await context.cloudflare?.env.DB.prepare(`
+      await env.DB.prepare(`
         INSERT INTO chat_messages (message, sender, model, project_id, timestamp)
         VALUES (?, ?, ?, ?, ?)
       `).bind(
@@ -95,7 +131,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
     if (files && Object.keys(files).length > 0) {
       const namespace = `PROJECT_${projectId}`;
       for (const [fileName, fileContent] of Object.entries(files)) {
-        await context.cloudflare?.env.PROJECT_FILES.put(
+        await env.PROJECT_FILES.put(
           `${namespace}/${fileName}`,
           JSON.stringify(fileContent)
         );
@@ -123,7 +159,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
 
           summary = await createSummary({
             messages: [...messages],
-            env: context.cloudflare?.env,
+            env,
             apiKeys,
             providerSettings,
             promptId,
@@ -159,7 +195,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
           console.log(`Messages count: ${messages.length} for project ${projectId}`);
           filteredFiles = await selectContext({
             messages: [...messages],
-            env: context.cloudflare?.env,
+            env,
             apiKeys,
             files,
             providerSettings,
@@ -243,7 +279,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
 
             const result = await streamText({
               messages,
-              env: context.cloudflare?.env,
+              env,
               options,
               apiKeys,
               files,
@@ -269,7 +305,7 @@ async function chatPostAction({ context, request }: ActionFunctionArgs) {
 
         const result = await streamText({
           messages,
-          env: context.cloudflare?.env,
+          env,
           options,
           apiKeys,
           files,
