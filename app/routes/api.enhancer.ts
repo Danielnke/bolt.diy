@@ -9,16 +9,16 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 async function enhancerAction({ context, request }: ActionFunctionArgs) {
-  const { message, model, provider } = await request.json<{
+  const { message, model, provider, project_id } = await request.json<{
     message: string;
     model: string;
     provider: ProviderInfo;
-    apiKeys?: Record<string, string>;
+    project_id: string; // Add project_id to the type definition
   }>();
 
   const { name: providerName } = provider;
 
-  // validate 'model' and 'provider' fields
+  // Validate 'model', 'provider', and 'project_id' fields
   if (!model || typeof model !== 'string') {
     throw new Response('Invalid or missing model', {
       status: 400,
@@ -28,6 +28,13 @@ async function enhancerAction({ context, request }: ActionFunctionArgs) {
 
   if (!providerName || typeof providerName !== 'string') {
     throw new Response('Invalid or missing provider', {
+      status: 400,
+      statusText: 'Bad Request',
+    });
+  }
+
+  if (!project_id || typeof project_id !== 'string') {
+    throw new Response('Invalid or missing project_id', {
       status: 400,
       statusText: 'Bad Request',
     });
@@ -43,7 +50,7 @@ async function enhancerAction({ context, request }: ActionFunctionArgs) {
         {
           role: 'user',
           content:
-            `[Model: ${model}]\n\n[Provider: ${providerName}]\n\n` +
+            `[Model: ${model}]\n\n[Provider: ${providerName}]\n\n[Project: ${project_id}]\n\n` + // Include project_id in the prompt
             stripIndents`
             You are a professional prompt engineer specializing in crafting precise, effective prompts.
             Your task is to enhance prompts by making them more specific, actionable, and effective.
@@ -72,24 +79,26 @@ async function enhancerAction({ context, request }: ActionFunctionArgs) {
               ${message}
             </original_prompt>
           `,
+          project_id, // Optionally pass project_id to streamText if it supports it
         },
       ],
       env: context.cloudflare?.env as any,
       apiKeys,
       providerSettings,
+      project_id, // Pass project_id to streamText for scoping (if supported)
     });
 
     return new Response(result.textStream, {
       status: 200,
       headers: {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         Connection: 'keep-alive',
         'Cache-Control': 'no-cache',
         'Text-Encoding': 'chunked',
       },
     });
   } catch (error: unknown) {
-    console.log(error);
+    console.log(`Error enhancing prompt for project ${project_id}:`, error);
 
     if (error instanceof Error && error.message?.includes('API key')) {
       throw new Response('Invalid or missing API key', {
