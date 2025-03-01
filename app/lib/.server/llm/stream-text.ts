@@ -27,6 +27,7 @@ export async function streamText(props: {
   contextOptimization?: boolean;
   contextFiles?: FileMap;
   summary?: string;
+  project_id?: string; // Added project_id for scoping and logging
 }) {
   const {
     messages,
@@ -39,17 +40,21 @@ export async function streamText(props: {
     contextOptimization,
     contextFiles,
     summary,
+    project_id, // Use project_id for logging and scoping
   } = props;
+
   let currentModel = DEFAULT_MODEL;
   let currentProvider = DEFAULT_PROVIDER.name;
+
+  // Process messages and extract model/provider from user messages
   let processedMessages = messages.map((message) => {
     if (message.role === 'user') {
       const { model, provider, content } = extractPropertiesFromMessage(message);
-      currentModel = model;
-      currentProvider = provider;
+      currentModel = model || currentModel;
+      currentProvider = provider || currentProvider;
 
       return { ...message, content };
-    } else if (message.role == 'assistant') {
+    } else if (message.role === 'assistant') {
       let content = message.content;
 
       if (contextOptimization) {
@@ -77,15 +82,15 @@ export async function streamText(props: {
     ];
 
     if (!modelsList.length) {
+      logger.error(`No models found for provider ${provider.name} in project ${project_id}`);
       throw new Error(`No models found for provider ${provider.name}`);
     }
 
     modelDetails = modelsList.find((m) => m.name === currentModel);
 
     if (!modelDetails) {
-      // Fallback to first model
       logger.warn(
-        `MODEL [${currentModel}] not found in provider [${provider.name}]. Falling back to first model. ${modelsList[0].name}`,
+        `Model [${currentModel}] not found in provider [${provider.name}] for project ${project_id}. Falling back to first model: ${modelsList[0].name}`,
       );
       modelDetails = modelsList[0];
     }
@@ -93,61 +98,6 @@ export async function streamText(props: {
 
   const dynamicMaxTokens = modelDetails && modelDetails.maxTokenAllowed ? modelDetails.maxTokenAllowed : MAX_TOKENS;
 
+  // Construct system prompt with project_id for context
   let systemPrompt =
-    PromptLibrary.getPropmtFromLibrary(promptId || 'default', {
-      cwd: WORK_DIR,
-      allowedHtmlElements: allowedHTMLElements,
-      modificationTagName: MODIFICATIONS_TAG_NAME,
-    }) ?? getSystemPrompt();
-
-  if (files && contextFiles && contextOptimization) {
-    const codeContext = createFilesContext(contextFiles, true);
-    const filePaths = getFilePaths(files);
-
-    systemPrompt = `${systemPrompt}
-Below are all the files present in the project:
----
-${filePaths.join('\n')}
----
-
-Below is the context loaded into context buffer for you to have knowledge of and might need changes to fullfill current user request.
-CONTEXT BUFFER:
----
-${codeContext}
----
-`;
-
-    if (summary) {
-      systemPrompt = `${systemPrompt}
-      below is the chat history till now
-CHAT SUMMARY:
----
-${props.summary}
----
-`;
-
-      const lastMessage = processedMessages.pop();
-
-      if (lastMessage) {
-        processedMessages = [lastMessage];
-      }
-    }
-  }
-
-  logger.info(`Sending llm call to ${provider.name} with model ${modelDetails.name}`);
-
-  // console.log(systemPrompt,processedMessages);
-
-  return await _streamText({
-    model: provider.getModelInstance({
-      model: modelDetails.name,
-      serverEnv,
-      apiKeys,
-      providerSettings,
-    }),
-    system: systemPrompt,
-    maxTokens: dynamicMaxTokens,
-    messages: convertToCoreMessages(processedMessages as any),
-    ...options,
-  });
-}
+    PromptLibrary.getPropm
