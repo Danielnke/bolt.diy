@@ -103,3 +103,11 @@ export const detectProjectType = async (
 
   return { type: '', setupCommand: '', followupMessage: '' };
 };
+
+// Add this function to handle file artifacts for chat messages
+export function filesToArtifacts(files: any[], timestamp: string): string {
+  if (!files || files.length === 0) return '';
+  return files
+    .map((file) => `[File: ${file.name}, Modified: ${timestamp}]`)
+    .join('\n');
+}
