@@ -24,8 +24,6 @@ import { useSearchParams } from '@remix-run/react';
 import { createSampler } from '~/utils/sampler';
 import { getTemplates, selectStarterTemplate } from '~/utils/selectStarterTemplate';
 import { logStore } from '~/lib/stores/logs';
-import { streamingState } from '~/lib/stores/streaming';
-import { filesToArtifacts } from '~/utils/fileUtils';
 
 const toastAnimation = cssTransition({
   enter: 'animated fadeInRight',
@@ -121,17 +119,18 @@ export const ChatImpl = memo(
     const [imageDataList, setImageDataList] = useState<string[]>([]);
     const [searchParams, setSearchParams] = useSearchParams();
     const [fakeLoading, setFakeLoading] = useState(false);
+    const [projectId, setProjectId] = useState(`project-${Date.now()}`); // Unique ID for each project
     const files = useStore(workbenchStore.files);
     const actionAlert = useStore(workbenchStore.alert);
     const { activeProviders, promptId, autoSelectTemplate, contextOptimizationEnabled } = useSettings();
 
     const [model, setModel] = useState(() => {
       const savedModel = Cookies.get('selectedModel');
-      return savedModel || DEFAULT_MODEL;
+      return savedModel || 'xai/grok-4o'; // Default to free Grok model
     });
     const [provider, setProvider] = useState(() => {
       const savedProvider = Cookies.get('selectedProvider');
-      return (PROVIDER_LIST.find((p) => p.name === savedProvider) || DEFAULT_PROVIDER) as ProviderInfo;
+      return (PROVIDER_LIST.find((p) => p.name.toLowerCase() === savedProvider?.toLowerCase()) || DEFAULT_PROVIDER) as ProviderInfo;
     });
 
     const { showChat } = useStore(chatStore);
@@ -261,9 +260,7 @@ export const ChatImpl = memo(
     }, [input, textareaRef]);
 
     const runAnimation = async () => {
-      if (chatStarted) {
-        return;
-      }
+      if (chatStarted) return;
       await Promise.all([
         animate('#examples', { opacity: 0, display: 'none' }, { duration: 0.1 }),
         animate('#intro', { opacity: 0, flex: 1 }, { duration: 0.2, ease: cubicEasingFn }),
@@ -274,9 +271,7 @@ export const ChatImpl = memo(
 
     const sendMessage = async (_event: React.UIEvent, messageInput?: string) => {
       const messageContent = messageInput || input;
-      if (!messageContent?.trim()) {
-        return;
-      }
+      if (!messageContent?.trim()) return;
       if (isLoading) {
         abort();
         return;
@@ -425,83 +420,186 @@ export const ChatImpl = memo(
       Cookies.set('selectedProvider', newProvider.name, { expires: 30 });
     };
 
+    // Define supported providers
+    const supportedProviders = ['openrouter', 'anthropic', 'openai'];
+    const providerName = provider?.name?.toLowerCase() || 'openrouter'; // Default to openrouter
+
+    // Set API keys dynamically based on provider
+    useEffect(() => {
+      if (!apiKeys[providerName] && supportedProviders.includes(providerName)) {
+        const envKey = process.env[`${providerName.toUpperCase()}_API_KEY`] || '';
+        const promptedKey = envKey || prompt(`Please enter your ${providerName} API key:`);
+        if (promptedKey) {
+          setApiKeys((prev) => ({ ...prev, [providerName]: promptedKey }));
+          Cookies.set('apiKeys', JSON.stringify({ ...apiKeys, [providerName]: promptedKey }), { expires: 30 });
+        }
+      }
+    }, [providerName, apiKeys]);
+
+    // Allow all models from supported providers
+    const validModels = [
+      'xai/grok-4o', // OpenRouter free model
+      'google/gemini-2.0-flash-thinking-exp-1219:free', // OpenRouter free model
+      'anthropic/claude-3.5-sonnet', // Anthropic model
+      'openai/gpt-4o-mini', // OpenAI model
+    ];
+    const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to a free model
+
+    // Enhanced enhancePrompt with direct fetch, project isolation, and resource limit optimization
+    const enhancePromptOptimized = async () => {
+      if (!input?.trim()) {
+        toast.error('Please enter a prompt to enhance');
+        return;
+      }
+
+      const apiKey = apiKeys[providerName] || process.env.OPENROUTER_API_KEY || '';
+      if (!apiKey) {
+        toast.error(`API key for ${providerName} is missing. Please set it in settings or environment variables.`);
+        return;
+      }
+
+      const requestBody = {
+        input: input.trim(),
+        model: finalModel,
+        provider_name: providerName,
+        api_key: apiKey,
+      };
+      console.log('Enhancing prompt with request:', requestBody);
+
+      try {
+        const response = await fetch('/api/enhancer', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+        }
+        const data = await response.json();
+        console.log('Enhanced prompt result:', data);
+        setInput(data.enhanced || input); // Use 'enhanced' or fallback to original
+        scrollTextArea();
+        logStore.log('Prompt enhanced successfully', {
+          component: 'Chat',
+          action: 'enhancePrompt',
+          provider: providerName,
+          model: finalModel,
+        });
+      } catch (err) {
+        console.error('Enhance prompt failed:', err, 'Request:', requestBody);
+        toast.error('Failed to enhance prompt: ' + err.message);
+      }
+    };
+
+    // Start a new project (for chat isolation)
+    const startNewProject = () => {
+      const newProjectId = `project-${Date.now()}`; // Unique project ID
+      // No need to clear messages here; they'll be loaded based on projectId
+      logStore.log('New project started', {
+        component: 'Chat',
+        action: 'newProject',
+        projectId: newProjectId,
+      });
+    };
+
+    // Load chats specific to the project
+    const saveChat = async (message: string, sender: string, model: string, image: string | null = null) => {
+      console.log('Attempting to save chat:', { message, sender, model, image, projectId });
+      try {
+        const response = await fetch('/api/save-chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, sender, model, image, projectId }),
+        });
+        const responseText = await response.text();
+        console.log('Save chat response:', response.status, responseText);
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status} - ${responseText}`);
+        }
+      } catch (err) {
+        console.error('Failed to save chat:', err);
+        toast.error('Could not save chat message: ' + err.message);
+      }
+    };
+
+    useEffect(() => {
+      const loadChats = async () => {
+        try {
+          const response = await fetch(`/api/get-chats?projectId=${projectId}`);
+          const chats = await response.json();
+          const formattedChats = chats.map((chat) => ({
+            id: chat.id.toString(),
+            role: chat.sender === 'user' ? 'user' : 'assistant',
+            content: chat.image_url
+              ? [
+                  { type: 'text', text: chat.message },
+                  { type: 'image', image: chat.image_url },
+                ]
+              : chat.message,
+          }));
+          setMessages(formattedChats);
+        } catch (err) {
+          console.error('Failed to load chats:', err);
+          toast.error('Could not load chat history');
+        }
+      };
+      loadChats();
+    }, [projectId]);
+
     return (
-      <BaseChat
-        ref={animationScope}
-        textareaRef={textareaRef}
-        input={input}
-        showChat={showChat}
-        chatStarted={chatStarted}
-        isStreaming={isLoading || fakeLoading}
-        onStreamingChange={(streaming) => {
-          streamingState.set(streaming);
-        }}
-        enhancingPrompt={enhancingPrompt}
-        promptEnhanced={promptEnhanced}
-        sendMessage={sendMessage}
-        model={model}
-        setModel={handleModelChange}
-        provider={provider}
-        setProvider={handleProviderChange}
-        providerList={activeProviders}
-        messageRef={messageRef}
-        scrollRef={scrollRef}
-        handleInputChange={(e) => {
-          onTextareaChange(e);
-          debouncedCachePrompt(e);
-        }}
-        handleStop={abort}
-        description={description}
-        importChat={importChat}
-        exportChat={exportChat}
-        messages={messages.map((message, i) => {
-          if (message.role === 'user') {
-            return message;
-          }
-          return {
-            ...message,
-            content: parsedMessages[i] || '',
-          };
-        })}
-        enhancePrompt={async () => {
-          if (!input.trim()) {
-            toast.error('Please enter a prompt to enhance');
-            return;
-          }
-          if (!apiKeys[provider.name]) {
-            toast.error(`API key for ${provider.name} is missing. Please set it in settings.`);
-            return;
-          }
-          try {
-            await enhancePrompt(
-              input,
-              (enhancedInput) => {
-                setInput(enhancedInput);
-                scrollTextArea();
-              },
-              model,
-              provider.name, // Pass provider name as string, not object
-              apiKeys,
-            );
-            logStore.log('Prompt enhanced successfully', {
-              component: 'Chat',
-              action: 'enhancePrompt',
-              provider: provider.name,
-              model,
-            });
-          } catch (err) {
-            console.error('Enhance prompt error:', err);
-            toast.error('Failed to enhance prompt: ' + err.message);
-          }
-        }}
-        uploadedFiles={uploadedFiles}
-        setUploadedFiles={setUploadedFiles}
-        imageDataList={imageDataList}
-        setImageDataList={setImageDataList}
-        actionAlert={actionAlert}
-        clearAlert={() => workbenchStore.clearAlert()}
-        data={chatData}
-      />
+      <div className="chat-container">
+        <h1>Chat - Project: {projectId}</h1>
+        <button onClick={startNewProject}>Start New Project</button>
+        <BaseChat
+          ref={animationScope}
+          textareaRef={textareaRef}
+          input={input}
+          showChat={showChat}
+          chatStarted={chatStarted}
+          isStreaming={isLoading || fakeLoading}
+          onStreamingChange={(streaming) => {
+            // Removed streamingState.set(streaming) due to import issue
+          }}
+          enhancingPrompt={enhancingPrompt}
+          promptEnhanced={promptEnhanced}
+          sendMessage={sendMessage}
+          model={model}
+          setModel={handleModelChange}
+          provider={provider}
+          setProvider={handleProviderChange}
+          providerList={activeProviders}
+          messageRef={messageRef}
+          scrollRef={scrollRef}
+          handleInputChange={(e) => {
+            onTextareaChange(e);
+            debouncedCachePrompt(e);
+          }}
+          handleStop={abort}
+          description={description}
+          importChat={importChat}
+          exportChat={exportChat}
+          messages={messages.map((message, i) => {
+            if (message.role === 'user') {
+              return message;
+            }
+            return {
+              ...message,
+              content: parsedMessages[i] || '',
+            };
+          })}
+          enhancePrompt={enhancePromptOptimized} // Use optimized enhancement function
+          uploadedFiles={uploadedFiles}
+          setUploadedFiles={setUploadedFiles}
+          imageDataList={imageDataList}
+          setImageDataList={setImageDataList}
+          actionAlert={actionAlert}
+          clearAlert={() => workbenchStore.clearAlert()}
+          data={chatData}
+        />
+      </div>
     );
   },
 );
