@@ -528,14 +528,20 @@ export const ChatImpl = memo(
       }
     };
 
-    // Load chats specific to the project
+    // Save and load chats specific to the project
     const saveChat = async (message: string, sender: string, model: string, image: string | null = null) => {
       console.log('Attempting to save chat:', { message, sender, model, image, projectId });
       try {
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message, sender, model, image, projectId }),
+          body: JSON.stringify({
+            messages: [{ content: message, role: sender }],
+            files: {},
+            projectId: projectId, // Ensure projectId is included and valid
+            model: model, // Optional, for consistency
+            image: image, // Optional, included if provided
+          }),
         });
         const responseText = await response.text();
         console.log('Save chat response:', response.status, responseText);
@@ -548,30 +554,31 @@ export const ChatImpl = memo(
       }
     };
 
+    const loadChats = async () => {
+      try {
+        const response = await fetch(`/api/chat?projectId=${projectId}`, {
+          method: 'GET',
+        });
+        if (!response.ok) throw new Error('Failed to fetch chats');
+        const chats = await response.json();
+        const formattedChats = chats.map((chat) => ({
+          id: chat.id.toString(),
+          role: chat.sender === 'user' ? 'user' : 'assistant',
+          content: chat.image_url
+            ? [
+                { type: 'text', text: chat.message },
+                { type: 'image', image: chat.image_url },
+              ]
+            : chat.message,
+        }));
+        setMessages(formattedChats);
+      } catch (err) {
+        console.error('Failed to load chats for project ' + projectId + ':', err);
+        toast.error('Could not load chat history');
+      }
+    };
+
     useEffect(() => {
-      const loadChats = async () => {
-        try {
-          const response = await fetch(`/api/chat?projectId=${projectId}`, {
-            method: 'GET',
-          });
-          if (!response.ok) throw new Error('Failed to fetch chats');
-          const chats = await response.json();
-          const formattedChats = chats.map((chat) => ({
-            id: chat.id.toString(),
-            role: chat.sender === 'user' ? 'user' : 'assistant',
-            content: chat.image_url
-              ? [
-                  { type: 'text', text: chat.message },
-                  { type: 'image', image: chat.image_url },
-                ]
-              : chat.message,
-          }));
-          setMessages(formattedChats);
-        } catch (err) {
-          console.error('Failed to load chats for project ' + projectId + ':', err);
-          toast.error('Could not load chat history');
-        }
-      };
       loadChats();
     }, [projectId]);
 
@@ -582,8 +589,11 @@ export const ChatImpl = memo(
       if (projectParam) {
         startNewProject(); // Trigger new project
         setSearchParams({});
+      } else if (!projectId) {
+        // Ensure projectId is set if no URL parameter
+        startNewProject();
       }
-    }, [setSearchParams]);
+    }, [setSearchParams, projectId]);
 
     return (
       <BaseChat
