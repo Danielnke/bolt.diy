@@ -158,7 +158,7 @@ export const ChatImpl = memo(
       body: {
         apiKeys,
         files,
-        promptId,
+        promptId: promptId || 'default', // Default to 'default' if not set
         contextOptimization: contextOptimizationEnabled,
         projectId, // Pass projectId to API for chat and code isolation
       },
@@ -326,28 +326,31 @@ export const ChatImpl = memo(
                   id: `1-${new Date().getTime()}`,
                   role: 'user',
                   content: messageContent,
-                  projectId, // Include projectId for isolation
+                  projectId: projectId || `project-${Date.now()}`, // Ensure projectId exists
                 },
                 {
                   id: `2-${new Date().getTime()}`,
                   role: 'assistant',
                   content: assistantMessage,
-                  projectId, // Include projectId for isolation
+                  projectId: projectId || `project-${Date.now()}`, // Ensure projectId exists
                 },
                 {
                   id: `3-${new Date().getTime()}`,
                   role: 'user',
                   content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`,
                   annotations: ['hidden'],
-                  projectId, // Include projectId for isolation
+                  projectId: projectId || `project-${Date.now()}`, // Ensure projectId exists
                 },
               ]);
               reload();
               setFakeLoading(false);
+              await saveChat(messageContent, 'user', model, null); // Save initial chat
               return;
             }
           }
         }
+        const initialProjectId = projectId || `project-${Date.now()}`;
+        setProjectId(initialProjectId);
         setMessages([
           {
             id: `${new Date().getTime()}`,
@@ -362,11 +365,12 @@ export const ChatImpl = memo(
                 image: imageData,
               })),
             ] as any,
-            projectId, // Include projectId for isolation
+            projectId: initialProjectId, // Ensure projectId exists
           },
         ]);
         reload();
         setFakeLoading(false);
+        await saveChat(messageContent, 'user', model, imageDataList.length > 0 ? imageDataList[0] : null); // Save initial chat
         return;
       }
 
@@ -530,6 +534,12 @@ export const ChatImpl = memo(
 
     // Save and load chats specific to the project
     const saveChat = async (message: string, sender: string, model: string, image: string | null = null) => {
+      if (!projectId) {
+        throw new Error('Project ID is not set');
+      }
+      if (!message || !sender) {
+        throw new Error('Message content or sender role is required');
+      }
       console.log('Attempting to save chat:', { message, sender, model, image, projectId });
       try {
         const response = await fetch('/api/chat', {
@@ -541,6 +551,7 @@ export const ChatImpl = memo(
             projectId: projectId, // Ensure projectId is included and valid
             model: model, // Optional, for consistency
             image: image, // Optional, included if provided
+            promptId: promptId || 'default', // Include promptId, default to 'default'
           }),
         });
         const responseText = await response.text();
