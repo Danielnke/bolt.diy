@@ -76,12 +76,13 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
   try {
     // Parse the request body
-    const { messages, files, projectId, model, image } = await request.json<{
+    const { messages, files, projectId, model, image, promptId } = await request.json<{
       messages: { content: string; role: string }[];
       files: Record<string, any>;
       projectId: string;
       model?: string;
       image?: string | null;
+      promptId?: string;
     }>();
 
     if (!projectId || !messages || !Array.isArray(messages)) {
@@ -97,25 +98,32 @@ export async function action({ context, request }: ActionFunctionArgs) {
       return new Response('Invalid projectId format', { status: 400 });
     }
 
+    // Validate each message in the array
+    for (const message of messages) {
+      if (!message.content || typeof message.content !== 'string' || message.content.trim() === '') {
+        logger.error(`Invalid message content for project ${projectId}:`, { content: message.content });
+        return new Response('Invalid message content or role', { status: 400 });
+      }
+      if (!message.role || typeof message.role !== 'string' || message.role.trim() === '') {
+        logger.error(`Invalid message role for project ${projectId}:`, { role: message.role });
+        return new Response('Invalid message content or role', { status: 400 });
+      }
+    }
+
     logger.info(`Processing chat request for project ${projectId} in bolt_diy_database`);
 
     // Save chat messages to D1 (bolt_diy_database)
     for (const message of messages) {
-      const content = message.content || 'No content';
-      const role = message.role || 'unknown';
+      const content = message.content.trim();
+      const role = message.role.trim();
       const messageModel = model || 'default-model'; // Use client-provided model or default
-
-      if (!content || typeof content !== 'string' || !role || typeof role !== 'string') {
-        logger.error(`Invalid message data for project ${projectId}:`, { content, role });
-        return new Response('Invalid message content or role', { status: 400 });
-      }
 
       try {
         await env.DB.prepare(`
           INSERT INTO chat_messages (message, sender, model, project_id, timestamp)
           VALUES (?, ?, ?, ?, ?)
         `)
-          .bind(content, role, messageModel, projectId, Date.now()) // Use INTEGER for timestamp
+          .bind(content, role, messageModel, projectId, Date.now())
           .run();
       } catch (dbError) {
         logger.error(`Failed to save message to D1 for project ${projectId}:`, dbError);
@@ -185,7 +193,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
             env,
             apiKeys,
             providerSettings,
-            promptId,
+            promptId: promptId || 'default', // Use 'default' if promptId is undefined
             contextOptimization,
             projectId, // Pass projectId for context
             onFinish(resp) {
@@ -222,7 +230,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
             apiKeys,
             files,
             providerSettings,
-            promptId,
+            promptId: promptId || 'default', // Use 'default' if promptId is undefined
             contextOptimization,
             summary,
             projectId, // Pass projectId for scoping
@@ -307,7 +315,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
               apiKeys,
               files,
               providerSettings,
-              promptId,
+              promptId: promptId || 'default', // Use 'default' if promptId is undefined
               contextOptimization,
               projectId, // Pass projectId for scoping
             });
@@ -333,7 +341,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
           apiKeys,
           files,
           providerSettings,
-          promptId,
+          promptId: promptId || 'default', // Use 'default' if promptId is undefined
           contextOptimization,
           projectId, // Pass projectId for scoping
         });
