@@ -38,9 +38,9 @@ async function cleanupOldD1Data(env: any) {
     const { count } = await env.DB.prepare(`
       DELETE FROM chat_messages WHERE project_id = 'default-project'
     `).run();
-    logger.debug(`Cleaned up ${count} old chat messages with project_id = 'default-project'`);
+    logger.debug(`Cleaned up ${count} old chat messages with project_id = 'default-project' in bolt_diy_database`);
   } catch (error) {
-    logger.error('Failed to clean up old D1 data:', error);
+    logger.error('Failed to clean up old D1 data in bolt_diy_database:', error);
   }
 }
 
@@ -55,7 +55,7 @@ async function cleanupOldKVData(env: any) {
       }
     }
   } catch (error) {
-    logger.error('Failed to clean up old KV data:', error);
+    logger.error('Failed to clean up old KV data in PROJECT_FILES:', error);
   }
 }
 
@@ -76,12 +76,12 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
   try {
     // Parse the request body
-    const { messages, files, promptId, contextOptimization, projectId } = await request.json<{
-      messages: Messages;
+    const { messages, files, projectId, model, image } = await request.json<{
+      messages: { content: string; role: string }[];
       files: Record<string, any>;
-      promptId?: string;
-      contextOptimization: boolean;
       projectId: string;
+      model?: string;
+      image?: string | null;
     }>();
 
     if (!projectId || !messages || !Array.isArray(messages)) {
@@ -92,28 +92,28 @@ export async function action({ context, request }: ActionFunctionArgs) {
       return new Response('Missing or invalid projectId or messages', { status: 400 });
     }
 
-    logger.info(`Processing chat request for project ${projectId}`);
+    logger.info(`Processing chat request for project ${projectId} in bolt_diy_database`);
 
-    // Save chat messages to D1
+    // Save chat messages to D1 (bolt_diy_database)
     for (const message of messages) {
-      const content = message.content[0]?.text || (typeof message.content === 'string' ? message.content : JSON.stringify(message.content));
+      const content = message.content || 'No content';
       const role = message.role || 'unknown';
-      const model = message.model || 'default-model'; // Default or extract from message if available
+      const messageModel = model || 'default-model'; // Use client-provided model or default
 
       try {
         await env.DB.prepare(`
           INSERT INTO chat_messages (message, sender, model, project_id, timestamp)
           VALUES (?, ?, ?, ?, ?)
         `)
-          .bind(content, role, model, projectId, Date.now())
+          .bind(content, role, messageModel, projectId, Date.now())
           .run();
       } catch (dbError) {
         logger.error(`Failed to save message to D1 for project ${projectId}:`, dbError);
-        throw new Error(`Database error: ${dbError.message}`);
+        throw new Error(`Database error in bolt_diy_database: ${dbError.message}`);
       }
     }
 
-    // Store files in Cloudflare KV under PROJECT_<projectId>
+    // Store files in Cloudflare KV (PROJECT_FILES) under PROJECT_<projectId>
     if (files && Object.keys(files).length > 0) {
       const namespace = `PROJECT_${projectId}`;
       for (const [fileName, fileContent] of Object.entries(files)) {
@@ -123,10 +123,16 @@ export async function action({ context, request }: ActionFunctionArgs) {
             JSON.stringify(fileContent)
           );
         } catch (kvError) {
-          logger.error(`Failed to store file ${fileName} in KV for project ${projectId}:`, kvError);
-          throw new Error(`KV storage error: ${kvError.message}`);
+          logger.error(`Failed to store file ${fileName} in PROJECT_FILES for project ${projectId}:`, kvError);
+          throw new Error(`KV storage error in PROJECT_FILES: ${kvError.message}`);
         }
       }
+    }
+
+    // Handle image if provided (store or log as needed)
+    if (image) {
+      logger.debug(`Image provided for project ${projectId}: ${image}`);
+      // Optionally store image in KV or D1 if needed (adjust as per your requirements)
     }
 
     const cookieHeader = request.headers.get('Cookie');
@@ -381,10 +387,10 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
       SELECT * FROM chat_messages WHERE project_id = ?
     `).bind(projectId).all();
 
-    logger.info(`Retrieved ${results.length} chats for project ${projectId}`);
+    logger.info(`Retrieved ${results.length} chats for project ${projectId} from bolt_diy_database`);
     return new Response(JSON.stringify(results), { status: 200 });
   } catch (error) {
-    logger.error(`Failed to get chats for project ${projectId}:`, error);
+    logger.error(`Failed to get chats for project ${projectId} from bolt_diy_database:`, error);
     return new Response(`Failed to retrieve chats: ${error.message || 'Unknown error'}`, { status: 500 });
   }
 }
