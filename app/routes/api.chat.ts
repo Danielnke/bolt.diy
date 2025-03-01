@@ -1,46 +1,10 @@
-import { type ActionFunctionArgs } from '@remix-run/cloudflare';
-import { createDataStream, generateId } from 'ai';
-import { MAX_RESPONSE_SEGMENTS, MAX_TOKENS, type FileMap } from '~/lib/.server/llm/constants';
-import { CONTINUE_PROMPT } from '~/lib/common/prompts/prompts';
-import { streamText, type Messages, type StreamingOptions } from '~/lib/.server/llm/stream-text';
-import SwitchableStream from '~/lib/.server/llm/switchable-stream';
-import type { IProviderSetting } from '~/types/model';
-import { createScopedLogger } from '~/utils/logger';
-import { getFilePaths, selectContext } from '~/lib/.server/llm/select-context';
-import type { ContextAnnotation, ProgressAnnotation } from '~/types/context';
-import { WORK_DIR } from '~/utils/constants';
-import { createSummary } from '~/lib/.server/llm/create-summary';
-
-export async function action(args: ActionFunctionArgs) {
-  return chatAction(args);
-}
-
-const logger = createScopedLogger('api.chat');
-
-function parseCookies(cookieHeader: string): Record<string, string> {
-  const cookies: Record<string, string> = {};
-
-  const items = cookieHeader.split(';').map((cookie) => cookie.trim());
-
-  items.forEach((item) => {
-    const [name, ...rest] = item.split('=');
-
-    if (name && rest) {
-      const decodedName = decodeURIComponent(name.trim());
-      const decodedValue = decodeURIComponent(rest.join('=').trim());
-      cookies[decodedName] = decodedValue;
-    }
-  });
-
-  return cookies;
-}
-
 async function chatAction({ context, request }: ActionFunctionArgs) {
-  const { messages, files, promptId, contextOptimization } = await request.json<{
+  const { messages, files, promptId, contextOptimization, projectId } = await request.json<{
     messages: Messages;
     files: any;
     promptId?: string;
     contextOptimization: boolean;
+    projectId: string; // Add projectId to the type definition
   }>();
 
   const cookieHeader = request.headers.get('Cookie');
@@ -60,7 +24,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
   let progressCounter: number = 1;
 
   try {
-    const totalMessageContent = messages.reduce((acc, message) => acc + message.content, '');
+    const totalMessageContent = messages.reduce((acc, message) => acc + (message.content as string), '');
     logger.debug(`Total message length: ${totalMessageContent.split(' ').length}, words`);
 
     const dataStream = createDataStream({
@@ -88,6 +52,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
             providerSettings,
             promptId,
             contextOptimization,
+            projectId, // Pass projectId to createSummary for context
             onFinish(resp) {
               if (resp.usage) {
                 logger.debug('createSummary token usage', JSON.stringify(resp.usage));
@@ -102,6 +67,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
             type: 'chatSummary',
             summary,
             chatId: messages.slice(-1)?.[0]?.id,
+            projectId, // Include projectId in the annotation
           } as ContextAnnotation);
 
           // Update context buffer
@@ -123,6 +89,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
             promptId,
             contextOptimization,
             summary,
+            projectId, // Pass projectId to selectContext for scoping
             onFinish(resp) {
               if (resp.usage) {
                 logger.debug('selectContext token usage', JSON.stringify(resp.usage));
@@ -134,7 +101,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
           });
 
           if (filteredFiles) {
-            logger.debug(`files in context : ${JSON.stringify(Object.keys(filteredFiles))}`);
+            logger.debug(`files in context : ${JSON.stringify(Object.keys(filteredFiles))} for project ${projectId}`);
           }
 
           dataStream.writeMessageAnnotation({
@@ -148,6 +115,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
 
               return path;
             }),
+            projectId, // Include projectId in the annotation
           } as ContextAnnotation);
 
           dataStream.writeMessageAnnotation({
@@ -178,6 +146,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
                   promptTokens: cumulativeUsage.promptTokens,
                   totalTokens: cumulativeUsage.totalTokens,
                 },
+                projectId, // Include projectId in usage annotation
               });
               await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -191,10 +160,10 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
 
             const switchesLeft = MAX_RESPONSE_SEGMENTS - stream.switches;
 
-            logger.info(`Reached max token limit (${MAX_TOKENS}): Continuing message (${switchesLeft} switches left)`);
+            logger.info(`Reached max token limit (${MAX_TOKENS}): Continuing message (${switchesLeft} switches left) for project ${projectId}`);
 
-            messages.push({ id: generateId(), role: 'assistant', content });
-            messages.push({ id: generateId(), role: 'user', content: CONTINUE_PROMPT });
+            messages.push({ id: generateId(), role: 'assistant', content, projectId }); // Add projectId to message
+            messages.push({ id: generateId(), role: 'user', content: CONTINUE_PROMPT, projectId }); // Add projectId to message
 
             const result = await streamText({
               messages,
@@ -205,6 +174,9 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
               providerSettings,
               promptId,
               contextOptimization,
+              contextFiles: filteredFiles,
+              summary,
+              projectId, // Pass projectId to streamText for scoping
             });
 
             result.mergeIntoDataStream(dataStream);
@@ -213,7 +185,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
               for await (const part of result.fullStream) {
                 if (part.type === 'error') {
                   const error: any = part.error;
-                  logger.error(`${error}`);
+                  logger.error(`${error} for project ${projectId}`);
 
                   return;
                 }
@@ -235,13 +207,14 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
           contextOptimization,
           contextFiles: filteredFiles,
           summary,
+          projectId, // Pass projectId to streamText for scoping
         });
 
         (async () => {
           for await (const part of result.fullStream) {
             if (part.type === 'error') {
               const error: any = part.error;
-              logger.error(`${error}`);
+              logger.error(`${error} for project ${projectId}`);
 
               return;
             }
@@ -250,7 +223,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
 
         result.mergeIntoDataStream(dataStream);
       },
-      onError: (error: any) => `Custom error: ${error.message}`,
+      onError: (error: any) => `Custom error for project ${projectId}: ${error.message}`,
     }).pipeThrough(
       new TransformStream({
         transform: (chunk, controller) => {
@@ -271,7 +244,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
       },
     });
   } catch (error: any) {
-    logger.error(error);
+    logger.error(`Error in chatAction for project ${projectId}:`, error);
 
     if (error.message?.includes('API key')) {
       throw new Response('Invalid or missing API key', {
