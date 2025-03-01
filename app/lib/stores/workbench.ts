@@ -33,6 +33,13 @@ type Artifacts = MapStore<Record<string, ArtifactState>>;
 
 export type WorkbenchViewType = 'code' | 'preview';
 
+export interface FileEntry {
+  name: string;
+  content?: string;
+  modified?: boolean; // Mark if the file has been modified
+  isNew?: boolean;    // Mark if the file is newly created
+}
+
 export class WorkbenchStore {
   #previewsStore = new PreviewsStore(webcontainer);
   #filesStore = new FilesStore(webcontainer);
@@ -50,7 +57,9 @@ export class WorkbenchStore {
     import.meta.hot?.data.unsavedFiles ?? atom<ActionAlert | undefined>(undefined);
   modifiedFiles = new Set<string>();
   artifactIdList: string[] = [];
+
   #globalExecutionQueue = Promise.resolve();
+
   constructor() {
     if (import.meta.hot) {
       import.meta.hot.data.artifacts = this.artifacts;
@@ -92,12 +101,15 @@ export class WorkbenchStore {
   get showTerminal() {
     return this.#terminalStore.showTerminal;
   }
+
   get boltTerminal() {
     return this.#terminalStore.boltTerminal;
   }
+
   get alert() {
     return this.actionAlert;
   }
+
   clearAlert() {
     this.actionAlert.set(undefined);
   }
@@ -109,6 +121,7 @@ export class WorkbenchStore {
   attachTerminal(terminal: ITerminal) {
     this.#terminalStore.attachTerminal(terminal);
   }
+
   attachBoltTerminal(terminal: ITerminal) {
     this.#terminalStore.attachBoltTerminal(terminal);
   }
@@ -121,7 +134,7 @@ export class WorkbenchStore {
     this.#editorStore.setDocuments(files);
 
     if (this.#filesStore.filesCount > 0 && this.currentDocument.get() === undefined) {
-      // we find the first file and select it
+      // We find the first file and select it
       for (const [filePath, dirent] of Object.entries(files)) {
         if (dirent?.type === 'file') {
           this.setSelectedFile(filePath);
@@ -160,8 +173,10 @@ export class WorkbenchStore {
 
       if (unsavedChanges) {
         newUnsavedFiles.add(currentDocument.filePath);
+        this.modifiedFiles.add(currentDocument.filePath); // Track modified files
       } else {
         newUnsavedFiles.delete(currentDocument.filePath);
+        this.modifiedFiles.delete(currentDocument.filePath); // Untrack if no longer modified
       }
 
       this.unsavedFiles.set(newUnsavedFiles);
@@ -198,6 +213,7 @@ export class WorkbenchStore {
     newUnsavedFiles.delete(filePath);
 
     this.unsavedFiles.set(newUnsavedFiles);
+    this.modifiedFiles.delete(filePath); // Clear modified status after saving
   }
 
   async saveCurrentDocument() {
@@ -233,16 +249,32 @@ export class WorkbenchStore {
     }
   }
 
-  getFileModifcations() {
-    return this.#filesStore.getFileModifications();
+  getModifiedFiles(): FileEntry[] {
+    const files = this.#filesStore.files.get();
+    const modifiedFilesList: FileEntry[] = [];
+
+    for (const [filePath, dirent] of Object.entries(files)) {
+      if (dirent?.type === 'file' && (this.modifiedFiles.has(filePath) || dirent.isNew)) {
+        modifiedFilesList.push({
+          name: extractRelativePath(filePath), // Use relative path for consistency
+          content: dirent.content,
+          modified: this.modifiedFiles.has(filePath),
+          isNew: dirent.isNew || false, // Assume isNew if not set
+        });
+      }
+    }
+
+    return modifiedFilesList;
   }
 
   resetAllFileModifications() {
+    this.modifiedFiles.clear();
+    this.unsavedFiles.set(new Set());
     this.#filesStore.resetFileModifications();
   }
 
   abortAllActions() {
-    // TODO: what do we wanna do and how do we wanna recover from this?
+    // TODO: Define how to handle aborting actions and recovery
   }
 
   setReloadedMessages(messages: string[]) {
@@ -288,11 +320,11 @@ export class WorkbenchStore {
 
     this.artifacts.setKey(messageId, { ...artifact, ...state });
   }
-  addAction(data: ActionCallbackData) {
-    // this._addAction(data);
 
+  addAction(data: ActionCallbackData) {
     this.addToExecutionQueue(() => this._addAction(data));
   }
+
   async _addAction(data: ActionCallbackData) {
     const { messageId } = data;
 
@@ -312,6 +344,7 @@ export class WorkbenchStore {
       this.addToExecutionQueue(() => this._runAction(data, isStreaming));
     }
   }
+
   async _runAction(data: ActionCallbackData, isStreaming: boolean = false) {
     const { messageId } = data;
 
@@ -380,10 +413,10 @@ export class WorkbenchStore {
       if (dirent?.type === 'file' && !dirent.isBinary) {
         const relativePath = extractRelativePath(filePath);
 
-        // split the path into segments
+        // Split the path into segments
         const pathSegments = relativePath.split('/');
 
-        // if there's more than one segment, we need to create folders
+        // If there's more than one segment, we need to create folders
         if (pathSegments.length > 1) {
           let currentFolder = zip;
 
@@ -392,7 +425,7 @@ export class WorkbenchStore {
           }
           currentFolder.file(pathSegments[pathSegments.length - 1], dirent.content);
         } else {
-          // if there's only one segment, it's a file in the root
+          // If there's only one segment, it's a file in the root
           zip.file(relativePath, dirent.content);
         }
       }
@@ -417,12 +450,12 @@ export class WorkbenchStore {
           currentHandle = await currentHandle.getDirectoryHandle(pathSegments[i], { create: true });
         }
 
-        // create or get the file
+        // Create or get the file
         const fileHandle = await currentHandle.getFileHandle(pathSegments[pathSegments.length - 1], {
           create: true,
         });
 
-        // write the file content
+        // Write the file content
         const writable = await fileHandle.createWritable();
         await writable.write(dirent.content);
         await writable.close();
