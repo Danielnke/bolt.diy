@@ -100,4 +100,66 @@ export async function streamText(props: {
 
   // Construct system prompt with project_id for context
   let systemPrompt =
-    PromptLibrary.getPropm
+    PromptLibrary.getPropmtFromLibrary(promptId || 'default', {
+      cwd: WORK_DIR,
+      allowedHtmlElements: allowedHTMLElements,
+      modificationTagName: MODIFICATIONS_TAG_NAME,
+    }) ?? getSystemPrompt();
+
+  if (files && contextFiles && contextOptimization) {
+    const codeContext = createFilesContext(contextFiles, true);
+    const filePaths = getFilePaths(files);
+
+    systemPrompt = `${systemPrompt}
+Below are all the files present in the project:
+---
+${filePaths.join('\n')}
+---
+
+Below is the context loaded into context buffer for you to have knowledge of and might need changes to fulfill current user request for project ${project_id}.
+CONTEXT BUFFER:
+---
+${codeContext}
+---
+`;
+
+    if (summary) {
+      systemPrompt = `${systemPrompt}
+Below is the chat history summary for project ${project_id}:
+CHAT SUMMARY:
+---
+${props.summary}
+---
+`;
+
+      const lastMessage = processedMessages.pop();
+
+      if (lastMessage) {
+        processedMessages = [lastMessage];
+      }
+    }
+  }
+
+  logger.info(`Streaming LLM call to ${provider.name} with model ${modelDetails.name} for project ${project_id}`);
+
+  // Stream the text response
+  try {
+    const result = await _streamText({
+      model: provider.getModelInstance({
+        model: modelDetails.name,
+        serverEnv,
+        apiKeys,
+        providerSettings,
+      }),
+      system: systemPrompt,
+      maxTokens: dynamicMaxTokens,
+      messages: convertToCoreMessages(processedMessages as any),
+      ...options,
+    });
+
+    return result;
+  } catch (error) {
+    logger.error(`Failed to stream text for project ${project_id}:`, error);
+    throw error instanceof Error ? error : new Error('Streaming failed');
+  }
+}
