@@ -24,6 +24,7 @@ import { useSearchParams } from '@remix-run/react';
 import { createSampler } from '~/utils/sampler';
 import { getTemplates, selectStarterTemplate } from '~/utils/selectStarterTemplate';
 import { logStore } from '~/lib/stores/logs';
+import { filesToArtifacts } from '~/utils/fileUtils';
 
 const toastAnimation = cssTransition({
   enter: 'animated fadeInRight',
@@ -159,6 +160,7 @@ export const ChatImpl = memo(
         files,
         promptId,
         contextOptimization: contextOptimizationEnabled,
+        projectId, // Pass projectId to API for code storage isolation
       },
       sendExtraMessageFields: true,
       onError: (e) => {
@@ -207,6 +209,7 @@ export const ChatImpl = memo(
               text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${prompt}`,
             },
           ] as any,
+          projectId, // Include projectId for new chats
         });
       }
     }, [model, provider, searchParams]);
@@ -302,17 +305,20 @@ export const ChatImpl = memo(
                   id: `1-${new Date().getTime()}`,
                   role: 'user',
                   content: messageContent,
+                  projectId, // Include projectId for isolation
                 },
                 {
                   id: `2-${new Date().getTime()}`,
                   role: 'assistant',
                   content: assistantMessage,
+                  projectId, // Include projectId for isolation
                 },
                 {
                   id: `3-${new Date().getTime()}`,
                   role: 'user',
                   content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`,
                   annotations: ['hidden'],
+                  projectId, // Include projectId for isolation
                 },
               ]);
               reload();
@@ -335,6 +341,7 @@ export const ChatImpl = memo(
                 image: imageData,
               })),
             ] as any,
+            projectId, // Include projectId for isolation
           },
         ]);
         reload();
@@ -349,38 +356,35 @@ export const ChatImpl = memo(
       const modifiedFiles = workbenchStore.getModifiedFiles();
       chatStore.setKey('aborted', false);
 
+      const contentPayload = [
+        {
+          type: 'text',
+          text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
+        },
+        ...imageDataList.map((imageData) => ({
+          type: 'image',
+          image: imageData,
+        })),
+      ];
+
       if (modifiedFiles !== undefined) {
         const userUpdateArtifact = filesToArtifacts(modifiedFiles, `${Date.now()}`);
+        contentPayload[0].text = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userUpdateArtifact}${messageContent}`;
         append({
           role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userUpdateArtifact}${messageContent}`,
-            },
-            ...imageDataList.map((imageData) => ({
-              type: 'image',
-              image: imageData,
-            })),
-          ] as any,
+          content: contentPayload as any,
+          projectId, // Include projectId for code storage isolation
         });
         workbenchStore.resetAllFileModifications();
       } else {
         append({
           role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
-            },
-            ...imageDataList.map((imageData) => ({
-              type: 'image',
-              image: imageData,
-            })),
-          ] as any,
+          content: contentPayload as any,
+          projectId, // Include projectId for code storage isolation
         });
       }
 
+      await saveChat(messageContent, 'user', model, imageDataList.length > 0 ? imageDataList[0] : null);
       setInput('');
       Cookies.remove(PROMPT_COOKIE_KEY);
       setUploadedFiles([]);
@@ -490,17 +494,19 @@ export const ChatImpl = memo(
           model: finalModel,
           projectId,
         });
+        await saveChat(data.enhanced || input, 'system', finalModel, null); // Save enhanced prompt with projectId
       } catch (err) {
         console.error('Enhance prompt failed:', err, 'Request:', requestBody);
         toast.error('Failed to enhance prompt: ' + err.message);
       }
     };
 
-    // Start a new project (for chat isolation, triggered externally)
+    // Start a new project (for chat and code isolation, triggered externally)
     const startNewProject = () => {
       const newProjectId = `project-${Date.now()}`; // Unique project ID
       setProjectId(newProjectId);
-      // No need to clear messages here; they'll be loaded based on projectId
+      setMessages([]); // Clear chat history for new project
+      workbenchStore.resetAllFileModifications(); // Clear file modifications for new project
       logStore.log('New project started', {
         component: 'Chat',
         action: 'newProject',
@@ -558,7 +564,7 @@ export const ChatImpl = memo(
       const projectParam = url.searchParams.get('project');
       if (projectParam) {
         const newProjectId = `project-${Date.now()}`;
-        setProjectId(newProjectParam || newProjectId);
+        setProjectId(projectParam || newProjectId);
         setSearchParams({});
       }
     }, [setSearchParams]);
