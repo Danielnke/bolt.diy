@@ -289,7 +289,7 @@ export const ChatImpl = memo(
         action: 'newProject',
         projectId: newProjectId,
       });
-      // Optionally navigate or refresh to ensure a clean state
+      // Navigate to ensure a clean state
       window.location.href = `?project=${newProjectId}`;
     };
 
@@ -374,35 +374,41 @@ export const ChatImpl = memo(
         setMessages(messages.slice(0, -1));
       }
 
-      const modifiedFiles = workbenchStore.getModifiedFiles();
-      chatStore.setKey('aborted', false);
+      try {
+        const modifiedFiles = workbenchStore.getModifiedFiles();
+        chatStore.setKey('aborted', false);
 
-      const contentPayload = [
-        {
-          type: 'text',
-          text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
-        },
-        ...imageDataList.map((imageData) => ({
-          type: 'image',
-          image: imageData,
-        })),
-      ];
+        const contentPayload = [
+          {
+            type: 'text',
+            text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
+          },
+          ...imageDataList.map((imageData) => ({
+            type: 'image',
+            image: imageData,
+          })),
+        ];
 
-      if (modifiedFiles !== undefined) {
-        const userUpdateArtifact = filesToArtifacts(modifiedFiles, `${Date.now()}`);
-        contentPayload[0].text = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userUpdateArtifact}${messageContent}`;
-        append({
-          role: 'user',
-          content: contentPayload as any,
-          projectId, // Include projectId for code storage isolation
-        });
-        workbenchStore.resetAllFileModifications();
-      } else {
-        append({
-          role: 'user',
-          content: contentPayload as any,
-          projectId, // Include projectId for code storage isolation
-        });
+        if (modifiedFiles !== undefined && modifiedFiles.length > 0) {
+          const userUpdateArtifact = filesToArtifacts(modifiedFiles, `${Date.now()}`);
+          contentPayload[0].text = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userUpdateArtifact}${messageContent}`;
+          append({
+            role: 'user',
+            content: contentPayload as any,
+            projectId, // Include projectId for code storage isolation
+          });
+          workbenchStore.resetAllFileModifications();
+        } else {
+          append({
+            role: 'user',
+            content: contentPayload as any,
+            projectId, // Include projectId for code storage isolation
+          });
+        }
+      } catch (error) {
+        logger.error('Error sending message:', error);
+        toast.error('Failed to send message: ' + error.message);
+        return;
       }
 
       await saveChat(messageContent, 'user', model, imageDataList.length > 0 ? imageDataList[0] : null);
