@@ -119,7 +119,7 @@ export const ChatImpl = memo(
     const [imageDataList, setImageDataList] = useState<string[]>([]);
     const [searchParams, setSearchParams] = useSearchParams();
     const [fakeLoading, setFakeLoading] = useState(false);
-    const [projectId, setProjectId] = useState(`project-${Date.now()}`); // Unique ID for each project
+    const [projectId, setProjectId] = useState(`project-${Date.now()}`); // Unique ID for each project, hidden from UI
     const files = useStore(workbenchStore.files);
     const actionAlert = useStore(workbenchStore.alert);
     const { activeProviders, promptId, autoSelectTemplate, contextOptimizationEnabled } = useSettings();
@@ -463,6 +463,7 @@ export const ChatImpl = memo(
         model: finalModel,
         provider_name: providerName,
         api_key: apiKey,
+        project_id: projectId, // Include projectId to scope enhancement requests
       };
       console.log('Enhancing prompt with request:', requestBody);
 
@@ -487,6 +488,7 @@ export const ChatImpl = memo(
           action: 'enhancePrompt',
           provider: providerName,
           model: finalModel,
+          projectId,
         });
       } catch (err) {
         console.error('Enhance prompt failed:', err, 'Request:', requestBody);
@@ -494,9 +496,10 @@ export const ChatImpl = memo(
       }
     };
 
-    // Start a new project (for chat isolation)
+    // Start a new project (for chat isolation, triggered externally)
     const startNewProject = () => {
       const newProjectId = `project-${Date.now()}`; // Unique project ID
+      setProjectId(newProjectId);
       // No need to clear messages here; they'll be loaded based on projectId
       logStore.log('New project started', {
         component: 'Chat',
@@ -549,57 +552,64 @@ export const ChatImpl = memo(
       loadChats();
     }, [projectId]);
 
+    // Trigger a new project via URL or other mechanisms (e.g., navigation)
+    useEffect(() => {
+      const url = new URL(window.location.href);
+      const projectParam = url.searchParams.get('project');
+      if (projectParam) {
+        const newProjectId = `project-${Date.now()}`;
+        setProjectId(newProjectParam || newProjectId);
+        setSearchParams({});
+      }
+    }, [setSearchParams]);
+
     return (
-      <div className="chat-container">
-        <h1>Chat - Project: {projectId}</h1>
-        <button onClick={startNewProject}>Start New Project</button>
-        <BaseChat
-          ref={animationScope}
-          textareaRef={textareaRef}
-          input={input}
-          showChat={showChat}
-          chatStarted={chatStarted}
-          isStreaming={isLoading || fakeLoading}
-          onStreamingChange={(streaming) => {
-            // Removed streamingState.set(streaming) due to import issue
-          }}
-          enhancingPrompt={enhancingPrompt}
-          promptEnhanced={promptEnhanced}
-          sendMessage={sendMessage}
-          model={model}
-          setModel={handleModelChange}
-          provider={provider}
-          setProvider={handleProviderChange}
-          providerList={activeProviders}
-          messageRef={messageRef}
-          scrollRef={scrollRef}
-          handleInputChange={(e) => {
-            onTextareaChange(e);
-            debouncedCachePrompt(e);
-          }}
-          handleStop={abort}
-          description={description}
-          importChat={importChat}
-          exportChat={exportChat}
-          messages={messages.map((message, i) => {
-            if (message.role === 'user') {
-              return message;
-            }
-            return {
-              ...message,
-              content: parsedMessages[i] || '',
-            };
-          })}
-          enhancePrompt={enhancePromptOptimized} // Use optimized enhancement function
-          uploadedFiles={uploadedFiles}
-          setUploadedFiles={setUploadedFiles}
-          imageDataList={imageDataList}
-          setImageDataList={setImageDataList}
-          actionAlert={actionAlert}
-          clearAlert={() => workbenchStore.clearAlert()}
-          data={chatData}
-        />
-      </div>
+      <BaseChat
+        ref={animationScope}
+        textareaRef={textareaRef}
+        input={input}
+        showChat={showChat}
+        chatStarted={chatStarted}
+        isStreaming={isLoading || fakeLoading}
+        onStreamingChange={(streaming) => {
+          // Removed streamingState.set(streaming) due to import issue
+        }}
+        enhancingPrompt={enhancingPrompt}
+        promptEnhanced={promptEnhanced}
+        sendMessage={sendMessage}
+        model={model}
+        setModel={handleModelChange}
+        provider={provider}
+        setProvider={handleProviderChange}
+        providerList={activeProviders}
+        messageRef={messageRef}
+        scrollRef={scrollRef}
+        handleInputChange={(e) => {
+          onTextareaChange(e);
+          debouncedCachePrompt(e);
+        }}
+        handleStop={abort}
+        description={description}
+        importChat={importChat}
+        exportChat={exportChat}
+        messages={messages.map((message, i) => {
+          if (message.role === 'user') {
+            return message;
+          }
+          return {
+            ...message,
+            content: parsedMessages[i] || '',
+          };
+        })}
+        enhancePrompt={enhancePromptOptimized} // Use optimized enhancement function
+        uploadedFiles={uploadedFiles}
+        setUploadedFiles={setUploadedFiles}
+        imageDataList={imageDataList}
+        setImageDataList={setImageDataList}
+        actionAlert={actionAlert}
+        clearAlert={() => workbenchStore.clearAlert()}
+        data={chatData}
+      />
     );
   },
 );
