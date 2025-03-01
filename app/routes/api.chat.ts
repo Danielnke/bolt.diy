@@ -78,15 +78,18 @@ export async function action({ context, request }: ActionFunctionArgs) {
     // Parse the request body
     const { messages, files, promptId, contextOptimization, projectId } = await request.json<{
       messages: Messages;
-      files: any;
+      files: Record<string, any>;
       promptId?: string;
       contextOptimization: boolean;
       projectId: string;
     }>();
 
-    if (!projectId) {
-      logger.error('Missing projectId in request');
-      return new Response('Missing projectId', { status: 400 });
+    if (!projectId || !messages || !Array.isArray(messages)) {
+      logger.error(`Invalid request data for project ${projectId || 'unknown'}: missing projectId or messages`, {
+        projectId,
+        messages,
+      });
+      return new Response('Missing or invalid projectId or messages', { status: 400 });
     }
 
     logger.info(`Processing chat request for project ${projectId}`);
@@ -97,12 +100,17 @@ export async function action({ context, request }: ActionFunctionArgs) {
       const role = message.role || 'unknown';
       const model = message.model || 'default-model'; // Default or extract from message if available
 
-      await env.DB.prepare(`
-        INSERT INTO chat_messages (message, sender, model, project_id, timestamp)
-        VALUES (?, ?, ?, ?, ?)
-      `)
-        .bind(content, role, model, projectId, Date.now())
-        .run();
+      try {
+        await env.DB.prepare(`
+          INSERT INTO chat_messages (message, sender, model, project_id, timestamp)
+          VALUES (?, ?, ?, ?, ?)
+        `)
+          .bind(content, role, model, projectId, Date.now())
+          .run();
+      } catch (dbError) {
+        logger.error(`Failed to save message to D1 for project ${projectId}:`, dbError);
+        throw new Error(`Database error: ${dbError.message}`);
+      }
     }
 
     // Store files in Cloudflare KV under PROJECT_<projectId>
@@ -114,9 +122,9 @@ export async function action({ context, request }: ActionFunctionArgs) {
             `${namespace}/${fileName}`,
             JSON.stringify(fileContent)
           );
-        } catch (error) {
-          logger.error(`Failed to store file ${fileName} in KV for project ${projectId}:`, error);
-          throw new Error(`Failed to store file: ${error.message}`);
+        } catch (kvError) {
+          logger.error(`Failed to store file ${fileName} in KV for project ${projectId}:`, kvError);
+          throw new Error(`KV storage error: ${kvError.message}`);
         }
       }
     }
@@ -346,7 +354,10 @@ export async function action({ context, request }: ActionFunctionArgs) {
       },
     });
   } catch (error: any) {
-    logger.error(`Error in chatPostAction for project ${projectId}:`, error);
+    logger.error(`Error in chatPostAction for project ${projectId}:`, {
+      message: error.message,
+      stack: error.stack,
+    });
     return new Response(`Internal Server Error: ${error.message || 'Unknown error'}`, { status: 500 });
   }
 }
