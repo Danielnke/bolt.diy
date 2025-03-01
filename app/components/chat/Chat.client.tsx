@@ -272,6 +272,27 @@ export const ChatImpl = memo(
       setChatStarted(true);
     };
 
+    const startNewProject = () => {
+      const newProjectId = `project-${Date.now()}`; // Unique project ID
+      setProjectId(newProjectId);
+      setMessages([]); // Clear chat history for new project
+      setInput(''); // Clear input field
+      workbenchStore.resetAllFileModifications(); // Clear file modifications for new project
+      setUploadedFiles([]); // Clear uploaded files
+      setImageDataList([]); // Clear image data
+      // Clear browser storage to prevent old data from persisting
+      localStorage.removeItem('projectData'); // Remove specific project data (adjust key if needed)
+      localStorage.clear(); // Clear all local storage (use cautiously, or be specific)
+      sessionStorage.clear(); // Clear session storage
+      logStore.log('New project started', {
+        component: 'Chat',
+        action: 'newProject',
+        projectId: newProjectId,
+      });
+      // Optionally navigate or refresh to ensure a clean state
+      window.location.href = `?project=${newProjectId}`;
+    };
+
     const sendMessage = async (_event: React.UIEvent, messageInput?: string) => {
       const messageContent = messageInput || input;
       if (!messageContent?.trim()) return;
@@ -501,24 +522,11 @@ export const ChatImpl = memo(
       }
     };
 
-    // Start a new project (for chat and code isolation, triggered externally)
-    const startNewProject = () => {
-      const newProjectId = `project-${Date.now()}`; // Unique project ID
-      setProjectId(newProjectId);
-      setMessages([]); // Clear chat history for new project
-      workbenchStore.resetAllFileModifications(); // Clear file modifications for new project
-      logStore.log('New project started', {
-        component: 'Chat',
-        action: 'newProject',
-        projectId: newProjectId,
-      });
-    };
-
     // Load chats specific to the project
     const saveChat = async (message: string, sender: string, model: string, image: string | null = null) => {
       console.log('Attempting to save chat:', { message, sender, model, image, projectId });
       try {
-        const response = await fetch('/api/save-chat', {
+        const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message, sender, model, image, projectId }),
@@ -537,7 +545,10 @@ export const ChatImpl = memo(
     useEffect(() => {
       const loadChats = async () => {
         try {
-          const response = await fetch(`/api/get-chats?projectId=${projectId}`);
+          const response = await fetch(`/api/chat?projectId=${projectId}`, {
+            method: 'GET',
+          });
+          if (!response.ok) throw new Error('Failed to fetch chats');
           const chats = await response.json();
           const formattedChats = chats.map((chat) => ({
             id: chat.id.toString(),
@@ -551,7 +562,7 @@ export const ChatImpl = memo(
           }));
           setMessages(formattedChats);
         } catch (err) {
-          console.error('Failed to load chats:', err);
+          console.error('Failed to load chats for project ' + projectId + ':', err);
           toast.error('Could not load chat history');
         }
       };
@@ -563,8 +574,7 @@ export const ChatImpl = memo(
       const url = new URL(window.location.href);
       const projectParam = url.searchParams.get('project');
       if (projectParam) {
-        const newProjectId = `project-${Date.now()}`;
-        setProjectId(projectParam || newProjectId);
+        startNewProject(); // Trigger new project
         setSearchParams({});
       }
     }, [setSearchParams]);
