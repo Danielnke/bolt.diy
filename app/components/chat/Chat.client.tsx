@@ -24,7 +24,7 @@ import { useSearchParams } from '@remix-run/react';
 import { createSampler } from '~/utils/sampler';
 import { getTemplates, selectStarterTemplate } from '~/utils/selectStarterTemplate';
 import { logStore } from '~/lib/stores/logs';
-import { filesToArtifacts } from '~/utils/fileUtils';
+import { filesToArtifacts } from '~/utils/fileUtils'; // Ensure this import is correct
 
 const toastAnimation = cssTransition({
   enter: 'animated fadeInRight',
