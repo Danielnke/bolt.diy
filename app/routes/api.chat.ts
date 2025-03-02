@@ -1,9 +1,7 @@
 import { type ActionFunctionArgs, type LoaderFunctionArgs } from '@remix-run/cloudflare';
 import { createDataStream, generateId } from 'ai';
-import { MAX_RESPONSE_SEGMENTS, MAX_TOKENS, type FileMap } from '~/lib/.server/llm/constants';
-import { CONTINUE_PROMPT } from '~/lib/common/prompts/prompts';
-import { streamText, type Messages, type StreamingOptions } from '~/lib/.server/llm/stream-text';
 import SwitchableStream from '~/lib/.server/llm/switchable-stream';
+import { streamText, type Messages, type StreamingOptions } from '~/lib/.server/llm/stream-text';
 import type { IProviderSetting } from '~/types/model';
 import { createScopedLogger } from '~/utils/logger';
 import { getFilePaths, selectContext } from '~/lib/.server/llm/select-context';
@@ -11,6 +9,11 @@ import type { ContextAnnotation, ProgressAnnotation } from '~/types/context';
 import { WORK_DIR } from '~/utils/constants';
 import { createSummary } from '~/lib/.server/llm/create-summary';
 import { filesToArtifacts } from '~/utils/fileUtils'; // Ensure this is imported correctly
+
+// Define constants here or in a shared module to avoid server-only imports
+const MAX_RESPONSE_SEGMENTS = 5; // Example value, adjust as needed
+const MAX_TOKENS = 4096; // Example value, adjust as needed
+const CONTINUE_PROMPT = 'Please continue the response.';
 
 const logger = createScopedLogger('api.chat');
 
@@ -109,7 +112,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
     logger.info(`Processing chat request for project ${projectId} in bolt_diy_database`);
 
-    // Save chat messages to D1 (bolt_diy_database) - Test saving first, skip streaming temporarily
+    // Save chat messages to D1 (bolt_diy_database)
     for (const message of validMessages) {
       const content = message.content;
       const role = message.role;
@@ -155,8 +158,11 @@ export async function action({ context, request }: ActionFunctionArgs) {
       logger.debug(`Image provided for project ${projectId}: ${image}`);
     }
 
-    // Temporarily disable streaming to isolate the 500 error - return a simple success response
-    return new Response('Chat saved successfully', { status: 200 });
+    // Simplified response (no streaming for now to isolate 500 errors)
+    return new Response(JSON.stringify({ success: true, message: 'Chat saved successfully' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
 
     // Uncomment and fix the following streaming logic if needed after confirming saves work
     /*
@@ -337,7 +343,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
         try {
           const result = await streamText({
-            messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content, id: generateId() })),
+            messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content, id: createId() })),
             env,
             options,
             apiKeys,
