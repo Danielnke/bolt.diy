@@ -295,7 +295,10 @@ export const ChatImpl = memo(
 
     const sendMessage = async (_event: React.UIEvent, messageInput?: string) => {
       const messageContent = messageInput || input;
-      if (!messageContent?.trim()) return;
+      if (!messageContent?.trim()) {
+        toast.error('Message cannot be empty');
+        return;
+      }
       if (isLoading) {
         abort();
         return;
@@ -321,25 +324,27 @@ export const ChatImpl = memo(
             });
             if (temResp) {
               const { assistantMessage, userMessage } = temResp;
+              const initialProjectId = projectId || `project-${Date.now()}`;
+              setProjectId(initialProjectId);
               setMessages([
                 {
                   id: `1-${new Date().getTime()}`,
                   role: 'user',
                   content: messageContent,
-                  projectId: projectId || `project-${Date.now()}`, // Ensure projectId exists
+                  projectId: initialProjectId,
                 },
                 {
                   id: `2-${new Date().getTime()}`,
                   role: 'assistant',
                   content: assistantMessage,
-                  projectId: projectId || `project-${Date.now()}`, // Ensure projectId exists
+                  projectId: initialProjectId,
                 },
                 {
                   id: `3-${new Date().getTime()}`,
                   role: 'user',
                   content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`,
                   annotations: ['hidden'],
-                  projectId: projectId || `project-${Date.now()}`, // Ensure projectId exists
+                  projectId: initialProjectId,
                 },
               ]);
               reload();
@@ -365,7 +370,7 @@ export const ChatImpl = memo(
                 image: imageData,
               })),
             ] as any,
-            projectId: initialProjectId, // Ensure projectId exists
+            projectId: initialProjectId,
           },
         ]);
         reload();
@@ -537,8 +542,8 @@ export const ChatImpl = memo(
       if (!projectId) {
         throw new Error('Project ID is not set');
       }
-      if (!message || !sender) {
-        throw new Error('Message content or sender role is required');
+      if (!message || !message.trim() || !sender || !sender.trim()) {
+        throw new Error('Message content and sender role cannot be empty');
       }
       console.log('Attempting to save chat:', { message, sender, model, image, projectId });
       try {
@@ -546,7 +551,7 @@ export const ChatImpl = memo(
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            messages: [{ content: message, role: sender }],
+            messages: [{ content: message.trim(), role: sender.trim() }],
             files: {},
             projectId: projectId, // Ensure projectId is included and valid
             model: model, // Optional, for consistency
