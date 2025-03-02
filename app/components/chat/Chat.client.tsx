@@ -24,6 +24,7 @@ import { useSearchParams } from '@remix-run/react';
 import { createSampler } from '~/utils/sampler';
 import { getTemplates, selectStarterTemplate } from '~/utils/selectStarterTemplate';
 import { logStore } from '~/lib/stores/logs';
+import { streamingState } from '~/lib/stores/streaming';
 import { filesToArtifacts } from '~/utils/fileUtils'; // Ensure this import is correct
 
 const toastAnimation = cssTransition({
@@ -120,18 +121,17 @@ export const ChatImpl = memo(
     const [imageDataList, setImageDataList] = useState<string[]>([]);
     const [searchParams, setSearchParams] = useSearchParams();
     const [fakeLoading, setFakeLoading] = useState(false);
-    const [projectId, setProjectId] = useState(`project-${Date.now()}`); // Unique ID for each project, hidden from UI
     const files = useStore(workbenchStore.files);
     const actionAlert = useStore(workbenchStore.alert);
     const { activeProviders, promptId, autoSelectTemplate, contextOptimizationEnabled } = useSettings();
 
     const [model, setModel] = useState(() => {
       const savedModel = Cookies.get('selectedModel');
-      return savedModel || 'xai/grok-4o'; // Default to free Grok model
+      return savedModel || DEFAULT_MODEL;
     });
     const [provider, setProvider] = useState(() => {
       const savedProvider = Cookies.get('selectedProvider');
-      return (PROVIDER_LIST.find((p) => p.name.toLowerCase() === savedProvider?.toLowerCase()) || DEFAULT_PROVIDER) as ProviderInfo;
+      return (PROVIDER_LIST.find((p) => p.name === savedProvider) || DEFAULT_PROVIDER) as ProviderInfo;
     });
 
     const { showChat } = useStore(chatStore);
@@ -160,7 +160,6 @@ export const ChatImpl = memo(
         files,
         promptId: promptId || 'default', // Default to 'default' if not set
         contextOptimization: contextOptimizationEnabled,
-        projectId, // Pass projectId to API for chat and code isolation
       },
       sendExtraMessageFields: true,
       onError: (e) => {
@@ -203,13 +202,8 @@ export const ChatImpl = memo(
         runAnimation();
         append({
           role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${prompt}`,
-            },
-          ] as any,
-          projectId, // Include projectId for new chats
+          content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${prompt}`, // Changed to string format
+          projectId: `project-${Date.now()}`, // Ensure projectId is included
         });
       }
     }, [model, provider, searchParams]);
@@ -330,7 +324,7 @@ export const ChatImpl = memo(
                 {
                   id: `1-${new Date().getTime()}`,
                   role: 'user',
-                  content: messageContent,
+                  content: messageContent, // Changed to string format
                   projectId: initialProjectId,
                 },
                 {
@@ -342,7 +336,7 @@ export const ChatImpl = memo(
                 {
                   id: `3-${new Date().getTime()}`,
                   role: 'user',
-                  content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`,
+                  content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`, // String format
                   annotations: ['hidden'],
                   projectId: initialProjectId,
                 },
@@ -360,16 +354,7 @@ export const ChatImpl = memo(
           {
             id: `${new Date().getTime()}`,
             role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
-              },
-              ...imageDataList.map((imageData) => ({
-                type: 'image',
-                image: imageData,
-              })),
-            ] as any,
+            content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`, // Changed to string format
             projectId: initialProjectId,
           },
         ]);
@@ -387,30 +372,21 @@ export const ChatImpl = memo(
         const modifiedFiles = workbenchStore.getModifiedFiles();
         chatStore.setKey('aborted', false);
 
-        const contentPayload = [
-          {
-            type: 'text',
-            text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
-          },
-          ...imageDataList.map((imageData) => ({
-            type: 'image',
-            image: imageData,
-          })),
-        ];
+        const content = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`; // String format
 
         if (modifiedFiles !== undefined && modifiedFiles.length > 0) {
           const userUpdateArtifact = filesToArtifacts(modifiedFiles, `${Date.now()}`);
-          contentPayload[0].text = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userUpdateArtifact}${messageContent}`;
+          content = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userUpdateArtifact}${messageContent}`; // String format
           append({
             role: 'user',
-            content: contentPayload as any,
+            content,
             projectId, // Include projectId for code storage isolation
           });
           workbenchStore.resetAllFileModifications();
         } else {
           append({
             role: 'user',
-            content: contentPayload as any,
+            content,
             projectId, // Include projectId for code storage isolation
           });
         }
@@ -581,11 +557,8 @@ export const ChatImpl = memo(
           id: chat.id.toString(),
           role: chat.sender === 'user' ? 'user' : 'assistant',
           content: chat.image_url
-            ? [
-                { type: 'text', text: chat.message },
-                { type: 'image', image: chat.image_url },
-              ]
-            : chat.message,
+            ? `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${chat.message}\n[Image: ${chat.image_url}]` // String format with image info
+            : `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${chat.message}`, // String format
         }));
         setMessages(formattedChats);
       } catch (err) {
@@ -620,7 +593,7 @@ export const ChatImpl = memo(
         chatStarted={chatStarted}
         isStreaming={isLoading || fakeLoading}
         onStreamingChange={(streaming) => {
-          // Removed streamingState.set(streaming) due to import issue
+          streamingState.set(streaming);
         }}
         enhancingPrompt={enhancingPrompt}
         promptEnhanced={promptEnhanced}
@@ -649,7 +622,18 @@ export const ChatImpl = memo(
             content: parsedMessages[i] || '',
           };
         })}
-        enhancePrompt={enhancePromptOptimized} // Use optimized enhancement function
+        enhancePrompt={() => {
+          enhancePrompt(
+            input,
+            (input) => {
+              setInput(input);
+              scrollTextArea();
+            },
+            model,
+            provider,
+            apiKeys,
+          );
+        }}
         uploadedFiles={uploadedFiles}
         setUploadedFiles={setUploadedFiles}
         imageDataList={imageDataList}
