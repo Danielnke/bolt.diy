@@ -286,4 +286,378 @@ export const ChatImpl = memo(
       sessionStorage.clear(); // Clear session storage
       logStore.log('New project started', {
         component: 'Chat',
-        action:
+        action: 'newProject',
+        projectId: newProjectId,
+      });
+      // Navigate to ensure a clean state
+      window.location.href = `?project=${newProjectId}`;
+    };
+
+    const sendMessage = async (_event: React.UIEvent, messageInput?: string) => {
+      const messageContent = messageInput || input;
+      if (!messageContent?.trim()) {
+        toast.error('Message cannot be empty');
+        return;
+      }
+      if (isLoading) {
+        abort();
+        return;
+      }
+      runAnimation();
+
+      if (!chatStarted) {
+        setFakeLoading(true);
+        if (autoSelectTemplate) {
+          const { template, title } = await selectStarterTemplate({
+            message: messageContent,
+            model,
+            provider,
+          });
+          if (template !== 'blank') {
+            const temResp = await getTemplates(template, title).catch((e) => {
+              if (e.message.includes('rate limit')) {
+                toast.warning('Rate limit exceeded. Skipping starter template\n Continuing with blank template');
+              } else {
+                toast.warning('Failed to import starter template\n Continuing with blank template');
+              }
+              return null;
+            });
+            if (temResp) {
+              const { assistantMessage, userMessage } = temResp;
+              const initialProjectId = projectId || `project-${Date.now()}`;
+              setProjectId(initialProjectId);
+              setMessages([
+                {
+                  id: `1-${new Date().getTime()}`,
+                  role: 'user',
+                  content: messageContent,
+                  projectId: initialProjectId,
+                },
+                {
+                  id: `2-${new Date().getTime()}`,
+                  role: 'assistant',
+                  content: assistantMessage,
+                  projectId: initialProjectId,
+                },
+                {
+                  id: `3-${new Date().getTime()}`,
+                  role: 'user',
+                  content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`,
+                  annotations: ['hidden'],
+                  projectId: initialProjectId,
+                },
+              ]);
+              reload();
+              setFakeLoading(false);
+              await saveChat(messageContent, 'user', model, null); // Save initial chat
+              return;
+            }
+          }
+        }
+        const initialProjectId = projectId || `project-${Date.now()}`;
+        setProjectId(initialProjectId);
+        setMessages([
+          {
+            id: `${new Date().getTime()}`,
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
+              },
+              ...imageDataList.map((imageData) => ({
+                type: 'image',
+                image: imageData,
+              })),
+            ] as any,
+            projectId: initialProjectId,
+          },
+        ]);
+        reload();
+        setFakeLoading(false);
+        await saveChat(messageContent, 'user', model, imageDataList.length > 0 ? imageDataList[0] : null); // Save initial chat
+        return;
+      }
+
+      if (error != null) {
+        setMessages(messages.slice(0, -1));
+      }
+
+      try {
+        const modifiedFiles = workbenchStore.getModifiedFiles();
+        chatStore.setKey('aborted', false);
+
+        const contentPayload = [
+          {
+            type: 'text',
+            text: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`,
+          },
+          ...imageDataList.map((imageData) => ({
+            type: 'image',
+            image: imageData,
+          })),
+        ];
+
+        if (modifiedFiles !== undefined && modifiedFiles.length > 0) {
+          const userUpdateArtifact = filesToArtifacts(modifiedFiles, `${Date.now()}`);
+          contentPayload[0].text = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userUpdateArtifact}${messageContent}`;
+          append({
+            role: 'user',
+            content: contentPayload as any,
+            projectId, // Include projectId for code storage isolation
+          });
+          workbenchStore.resetAllFileModifications();
+        } else {
+          append({
+            role: 'user',
+            content: contentPayload as any,
+            projectId, // Include projectId for code storage isolation
+          });
+        }
+      } catch (error) {
+        logger.error('Error sending message:', error);
+        toast.error('Failed to send message: ' + error.message);
+        return;
+      }
+
+      await saveChat(messageContent, 'user', model, imageDataList.length > 0 ? imageDataList[0] : null);
+      setInput('');
+      Cookies.remove(PROMPT_COOKIE_KEY);
+      setUploadedFiles([]);
+      setImageDataList([]);
+      resetEnhancer();
+      textareaRef.current?.blur();
+    };
+
+    const onTextareaChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+      handleInputChange(event);
+    };
+
+    const debouncedCachePrompt = useCallback(
+      debounce((event: React.ChangeEvent<HTMLTextAreaElement>) => {
+        const trimmedValue = event.target.value.trim();
+        Cookies.set(PROMPT_COOKIE_KEY, trimmedValue, { expires: 30 });
+      }, 1000),
+      [],
+    );
+
+    const [messageRef, scrollRef] = useSnapScroll();
+
+    useEffect(() => {
+      const storedApiKeys = Cookies.get('apiKeys');
+      if (storedApiKeys) {
+        setApiKeys(JSON.parse(storedApiKeys));
+      }
+    }, []);
+
+    const handleModelChange = (newModel: string) => {
+      setModel(newModel);
+      Cookies.set('selectedModel', newModel, { expires: 30 });
+    };
+
+    const handleProviderChange = (newProvider: ProviderInfo) => {
+      setProvider(newProvider);
+      Cookies.set('selectedProvider', newProvider.name, { expires: 30 });
+    };
+
+    // Define supported providers
+    const supportedProviders = ['openrouter', 'anthropic', 'openai'];
+    const providerName = provider?.name?.toLowerCase() || 'openrouter'; // Default to openrouter
+
+    // Set API keys dynamically based on provider
+    useEffect(() => {
+      if (!apiKeys[providerName] && supportedProviders.includes(providerName)) {
+        const envKey = process.env[`${providerName.toUpperCase()}_API_KEY`] || '';
+        const promptedKey = envKey || prompt(`Please enter your ${providerName} API key:`);
+        if (promptedKey) {
+          setApiKeys((prev) => ({ ...prev, [providerName]: promptedKey }));
+          Cookies.set('apiKeys', JSON.stringify({ ...apiKeys, [providerName]: promptedKey }), { expires: 30 });
+        }
+      }
+    }, [providerName, apiKeys]);
+
+    // Allow all models from supported providers
+    const validModels = [
+      'xai/grok-4o', // OpenRouter free model
+      'google/gemini-2.0-flash-thinking-exp-1219:free', // OpenRouter free model
+      'anthropic/claude-3.5-sonnet', // Anthropic model
+      'openai/gpt-4o-mini', // OpenAI model
+    ];
+    const finalModel = validModels.includes(model) ? model : 'xai/grok-4o'; // Default to a free model
+
+    // Enhanced enhancePrompt with direct fetch, project isolation, and resource limit optimization
+    const enhancePromptOptimized = async () => {
+      if (!input?.trim()) {
+        toast.error('Please enter a prompt to enhance');
+        return;
+      }
+
+      const apiKey = apiKeys[providerName] || process.env.OPENROUTER_API_KEY || '';
+      if (!apiKey) {
+        toast.error(`API key for ${providerName} is missing. Please set it in settings or environment variables.`);
+        return;
+      }
+
+      const requestBody = {
+        input: input.trim(),
+        model: finalModel,
+        provider_name: providerName,
+        api_key: apiKey,
+        project_id: projectId, // Include projectId to scope enhancement requests
+      };
+      console.log('Enhancing prompt with request:', requestBody);
+
+      try {
+        const response = await fetch('/api/enhancer', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+        }
+        const data = await response.json();
+        console.log('Enhanced prompt result:', data);
+        setInput(data.enhanced || input); // Use 'enhanced' or fallback to original
+        scrollTextArea();
+        logStore.log('Prompt enhanced successfully', {
+          component: 'Chat',
+          action: 'enhancePrompt',
+          provider: providerName,
+          model: finalModel,
+          projectId,
+        });
+        await saveChat(data.enhanced || input, 'system', finalModel, null); // Save enhanced prompt with projectId
+      } catch (err) {
+        console.error('Enhance prompt failed:', err, 'Request:', requestBody);
+        toast.error('Failed to enhance prompt: ' + err.message);
+      }
+    };
+
+    // Save and load chats specific to the project
+    const saveChat = async (message: string, sender: string, model: string, image: string | null = null) => {
+      if (!projectId) {
+        throw new Error('Project ID is not set');
+      }
+      if (!message.trim() || !sender.trim()) {
+        throw new Error('Message content and sender role cannot be empty');
+      }
+      console.log('Attempting to save chat:', { message, sender, model, image, projectId });
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [{ content: message.trim(), role: sender.trim() }],
+            files: {},
+            projectId,
+            model,
+            image,
+            promptId: promptId || 'default', // Include promptId, default to 'default'
+          }),
+        });
+        const responseText = await response.text();
+        console.log('Save chat response:', response.status, responseText);
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status} - ${responseText}`);
+        }
+      } catch (err) {
+        console.error('Failed to save chat:', err);
+        toast.error('Could not save chat message: ' + err.message);
+      }
+    };
+
+    const loadChats = async () => {
+      try {
+        const response = await fetch(`/api/chat?projectId=${projectId}`, {
+          method: 'GET',
+        });
+        if (!response.ok) throw new Error('Failed to fetch chats');
+        const chats = await response.json();
+        const formattedChats = chats.map((chat) => ({
+          id: chat.id.toString(),
+          role: chat.sender === 'user' ? 'user' : 'assistant',
+          content: chat.image_url
+            ? [
+                { type: 'text', text: chat.message },
+                { type: 'image', image: chat.image_url },
+              ]
+            : chat.message,
+        }));
+        setMessages(formattedChats);
+      } catch (err) {
+        console.error('Failed to load chats for project ' + projectId + ':', err);
+        toast.error('Could not load chat history');
+      }
+    };
+
+    useEffect(() => {
+      loadChats();
+    }, [projectId]);
+
+    // Trigger a new project via URL or other mechanisms (e.g., navigation)
+    useEffect(() => {
+      const url = new URL(window.location.href);
+      const projectParam = url.searchParams.get('project');
+      if (projectParam) {
+        startNewProject(); // Trigger new project
+        setSearchParams({});
+      } else if (!projectId) {
+        // Ensure projectId is set if no URL parameter
+        startNewProject();
+      }
+    }, [setSearchParams, projectId]);
+
+    return (
+      <BaseChat
+        ref={animationScope}
+        textareaRef={textareaRef}
+        input={input}
+        showChat={showChat}
+        chatStarted={chatStarted}
+        isStreaming={isLoading || fakeLoading}
+        onStreamingChange={(streaming) => {
+          // Removed streamingState.set(streaming) due to import issue
+        }}
+        enhancingPrompt={enhancingPrompt}
+        promptEnhanced={promptEnhanced}
+        sendMessage={sendMessage}
+        model={model}
+        setModel={handleModelChange}
+        provider={provider}
+        setProvider={handleProviderChange}
+        providerList={activeProviders}
+        messageRef={messageRef}
+        scrollRef={scrollRef}
+        handleInputChange={(e) => {
+          onTextareaChange(e);
+          debouncedCachePrompt(e);
+        }}
+        handleStop={abort}
+        description={description}
+        importChat={importChat}
+        exportChat={exportChat}
+        messages={messages.map((message, i) => {
+          if (message.role === 'user') {
+            return message;
+          }
+          return {
+            ...message,
+            content: parsedMessages[i] || '',
+          };
+        })}
+        enhancePrompt={enhancePromptOptimized} // Use optimized enhancement function
+        uploadedFiles={uploadedFiles}
+        setUploadedFiles={setUploadedFiles}
+        imageDataList={imageDataList}
+        setImageDataList={setImageDataList}
+        actionAlert={actionAlert}
+        clearAlert={() => workbenchStore.clearAlert()}
+        data={chatData}
+      />
+    );
+  },
+);
