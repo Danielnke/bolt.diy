@@ -542,7 +542,7 @@ export const ChatImpl = memo(
       if (!projectId) {
         throw new Error('Project ID is not set');
       }
-      if (!message || !message.trim() || !sender || !sender.trim()) {
+      if (!message.trim() || !sender.trim()) {
         throw new Error('Message content and sender role cannot be empty');
       }
       console.log('Attempting to save chat:', { message, sender, model, image, projectId });
@@ -553,9 +553,9 @@ export const ChatImpl = memo(
           body: JSON.stringify({
             messages: [{ content: message.trim(), role: sender.trim() }],
             files: {},
-            projectId: projectId, // Ensure projectId is included and valid
-            model: model, // Optional, for consistency
-            image: image, // Optional, included if provided
+            projectId,
+            model,
+            image,
             promptId: promptId || 'default', // Include promptId, default to 'default'
           }),
         });
