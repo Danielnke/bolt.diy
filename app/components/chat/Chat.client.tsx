@@ -169,7 +169,8 @@ export const ChatImpl = memo(
         logStore.logError('Chat request failed', e, {
           component: 'Chat',
           action: 'request',
-          error: e.message,
+          error: e.message || 'No details provided',
+          stack: e.stack, // Capture stack trace for debugging
         });
         toast.error(
           'There was an error processing your request: ' + (e.message ? e.message : 'No details were returned'),
@@ -193,7 +194,6 @@ export const ChatImpl = memo(
 
         logger.debug('Finished streaming');
       },
-      // Handle both JSON and stream responses
       initialMessages,
       initialInput: Cookies.get(PROMPT_COOKIE_KEY) || '',
     });
