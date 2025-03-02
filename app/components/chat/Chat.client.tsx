@@ -235,7 +235,7 @@ export const ChatImpl = memo(
 
     const abort = () => {
       stop();
-      chatStore.setKey('aborted', true);
+      chatStore.setKey('aborted', false); // Fixed: Changed 'false'' to 'false'
       workbenchStore.abortAllActions();
       logStore.logProvider('Chat response aborted', {
         component: 'Chat',
@@ -345,7 +345,7 @@ export const ChatImpl = memo(
 
       try {
         const modifiedFiles = workbenchStore.getModifiedFiles();
-        chatStore.setKey('aborted', false');
+        chatStore.setKey('aborted', false); // Fixed: Changed 'false'' to 'false'
 
         let content = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`; // Use let instead of const for reassignment
 
