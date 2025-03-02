@@ -139,6 +139,8 @@ export const ChatImpl = memo(
 
     const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
 
+    const [projectId, setProjectId] = useState<string>(`project-${Date.now()}`); // Ensure projectId is always defined with a string type
+
     const {
       messages,
       isLoading,
@@ -159,6 +161,7 @@ export const ChatImpl = memo(
         files,
         promptId: promptId || 'default', // Default to 'default' if not set
         contextOptimization: contextOptimizationEnabled,
+        projectId, // Pass projectId to API for chat and code isolation
       },
       sendExtraMessageFields: true,
       onError: (e) => {
@@ -199,10 +202,12 @@ export const ChatImpl = memo(
       if (prompt) {
         setSearchParams({});
         runAnimation();
+        const newProjectId = `project-${Date.now()}`; // Generate a new projectId
+        setProjectId(newProjectId);
         append({
           role: 'user',
           content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${prompt}`, // String format
-          projectId: `project-${Date.now()}`, // Ensure projectId is included
+          projectId: newProjectId, // Use the new projectId
         });
       }
     }, [model, provider, searchParams]);
@@ -235,7 +240,7 @@ export const ChatImpl = memo(
 
     const abort = () => {
       stop();
-      chatStore.setKey('aborted', false); // Fixed: Changed 'false'' to 'false'
+      chatStore.setKey('aborted', false);
       workbenchStore.abortAllActions();
       logStore.logProvider('Chat response aborted', {
         component: 'Chat',
@@ -296,25 +301,27 @@ export const ChatImpl = memo(
             });
             if (temResp) {
               const { assistantMessage, userMessage } = temResp;
+              const newProjectId = `project-${Date.now()}`; // Generate a new projectId
+              setProjectId(newProjectId);
               setMessages([
                 {
                   id: `1-${new Date().getTime()}`,
                   role: 'user',
                   content: messageContent, // String format
-                  projectId: `project-${Date.now()}`,
+                  projectId: newProjectId,
                 },
                 {
                   id: `2-${new Date().getTime()}`,
                   role: 'assistant',
                   content: assistantMessage,
-                  projectId: `project-${Date.now()}`,
+                  projectId: newProjectId,
                 },
                 {
                   id: `3-${new Date().getTime()}`,
                   role: 'user',
                   content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`, // String format
                   annotations: ['hidden'],
-                  projectId: `project-${Date.now()}`,
+                  projectId: newProjectId,
                 },
               ]);
               reload();
@@ -324,13 +331,14 @@ export const ChatImpl = memo(
             }
           }
         }
-        const projectId = `project-${Date.now()}`;
+        const newProjectId = `project-${Date.now()}`; // Generate a new projectId
+        setProjectId(newProjectId);
         setMessages([
           {
             id: `${new Date().getTime()}`,
             role: 'user',
             content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`, // String format
-            projectId,
+            projectId: newProjectId,
           },
         ]);
         reload();
@@ -345,7 +353,7 @@ export const ChatImpl = memo(
 
       try {
         const modifiedFiles = workbenchStore.getModifiedFiles();
-        chatStore.setKey('aborted', false); // Fixed: Changed 'false'' to 'false'
+        chatStore.setKey('aborted', false);
 
         let content = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`; // Use let instead of const for reassignment
 
@@ -355,14 +363,14 @@ export const ChatImpl = memo(
           append({
             role: 'user',
             content,
-            projectId, // Include projectId for code storage isolation
+            projectId: projectId || `project-${Date.now()}`, // Fallback if projectId is undefined
           });
           workbenchStore.resetAllFileModifications();
         } else {
           append({
             role: 'user',
             content,
-            projectId, // Include projectId for code storage isolation
+            projectId: projectId || `project-${Date.now()}`, // Fallback if projectId is undefined
           });
         }
       } catch (error) {
@@ -449,12 +457,13 @@ export const ChatImpl = memo(
         return;
       }
 
+      const currentProjectId = projectId || `project-${Date.now()}`; // Fallback if projectId is undefined
       const requestBody = {
         input: input.trim(),
         model: finalModel,
         provider_name: providerName,
         api_key: apiKey,
-        project_id: `project-${Date.now()}`, // Include projectId to scope enhancement requests
+        project_id: currentProjectId, // Use fallback to ensure projectId is defined
       };
       console.log('Enhancing prompt with request:', requestBody);
 
@@ -479,7 +488,7 @@ export const ChatImpl = memo(
           action: 'enhancePrompt',
           provider: providerName,
           model: finalModel,
-          projectId: `project-${Date.now()}`,
+          projectId: currentProjectId,
         });
         await saveChat(data.enhanced || input, 'system', finalModel, null); // Save enhanced prompt with projectId
       } catch (err) {
@@ -490,13 +499,14 @@ export const ChatImpl = memo(
 
     // Save and load chats specific to the project
     const saveChat = async (message: string, sender: string, model: string, image: string | null = null) => {
-      if (!projectId) {
+      const currentProjectId = projectId || `project-${Date.now()}`; // Fallback if projectId is undefined
+      if (!currentProjectId) {
         throw new Error('Project ID is not set');
       }
       if (!message.trim() || !sender.trim()) {
         throw new Error('Message content and sender role cannot be empty');
       }
-      console.log('Attempting to save chat:', { message, sender, model, image, projectId });
+      console.log('Attempting to save chat:', { message, sender, model, image, projectId: currentProjectId });
       try {
         const response = await fetch('/api/chat', {
           method: 'POST',
@@ -504,7 +514,7 @@ export const ChatImpl = memo(
           body: JSON.stringify({
             messages: [{ content: message.trim(), role: sender.trim() }],
             files: {},
-            projectId,
+            projectId: currentProjectId,
             model,
             image,
             promptId: promptId || 'default', // Include promptId, default to 'default'
@@ -522,8 +532,9 @@ export const ChatImpl = memo(
     };
 
     const loadChats = async () => {
+      const currentProjectId = projectId || `project-${Date.now()}`; // Fallback if projectId is undefined
       try {
-        const response = await fetch(`/api/chat?projectId=${projectId}`, {
+        const response = await fetch(`/api/chat?projectId=${currentProjectId}`, {
           method: 'GET',
         });
         if (!response.ok) throw new Error('Failed to fetch chats');
@@ -537,7 +548,7 @@ export const ChatImpl = memo(
         }));
         setMessages(formattedChats);
       } catch (err) {
-        console.error('Failed to load chats for project ' + projectId + ':', err);
+        console.error('Failed to load chats for project ' + currentProjectId + ':', err);
         toast.error('Could not load chat history');
       }
     };
