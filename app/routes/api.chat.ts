@@ -324,29 +324,34 @@ export async function action({ context, request }: ActionFunctionArgs) {
           },
         };
 
-        const result = await streamText({
-          messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content, id: generateId() })),
-          env,
-          options,
-          apiKeys,
-          files,
-          providerSettings,
-          promptId: promptId || 'default',
-          contextOptimization,
-          projectId,
-        });
+        try {
+          const result = await streamText({
+            messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content, id: generateId() })),
+            env,
+            options,
+            apiKeys,
+            files,
+            providerSettings,
+            promptId: promptId || 'default',
+            contextOptimization,
+            projectId,
+          });
 
-        (async () => {
-          for await (const part of result.fullStream) {
-            if (part.type === 'error') {
-              const error: any = part.error;
-              logger.error(`Error streaming for project ${projectId}: ${error}`);
-              return;
+          (async () => {
+            for await (const part of result.fullStream) {
+              if (part.type === 'error') {
+                const error: any = part.error;
+                logger.error(`Error streaming for project ${projectId}: ${error}`);
+                return;
+              }
             }
-          }
-        })();
+          })();
 
-        result.mergeIntoDataStream(dataStream);
+          result.mergeIntoDataStream(dataStream);
+        } catch (streamError) {
+          logger.error(`Failed to stream response for project ${projectId}:`, streamError);
+          throw new Error(`Streaming error: ${streamError.message}`);
+        }
       },
       onError: (error: any) => `Custom error for project ${projectId}: ${error.message}`,
     }).pipeThrough(
