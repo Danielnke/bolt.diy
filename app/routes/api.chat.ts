@@ -130,12 +130,11 @@ export async function action({ context, request }: ActionFunctionArgs) {
       logger.debug(`Image provided for project ${projectId}: ${image}`);
     }
 
-    // Simplified response to ensure build succeeds and runtime stability
+    // Simplified JSON response (no streaming)
     return new Response(JSON.stringify({ success: true, message: 'Chat saved successfully' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
-
   } catch (error: any) {
     logger.error(`Error in chatPostAction for project ${projectId}:`, {
       message: error.message,
