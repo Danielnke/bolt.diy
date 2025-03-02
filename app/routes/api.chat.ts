@@ -109,7 +109,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
     logger.info(`Processing chat request for project ${projectId} in bolt_diy_database`);
 
-    // Save chat messages to D1 (bolt_diy_database)
+    // Save chat messages to D1 (bolt_diy_database) - Test saving first, skip streaming temporarily
     for (const message of validMessages) {
       const content = message.content;
       const role = message.role;
@@ -123,8 +123,11 @@ export async function action({ context, request }: ActionFunctionArgs) {
           .bind(content, role, messageModel, projectId, Date.now())
           .run();
       } catch (dbError) {
-        logger.error(`Failed to save message to D1 for project ${projectId}:`, dbError);
-        throw new Error(`Database error in bolt_diy_database: ${dbError.message}`);
+        logger.error(`Failed to save message to D1 for project ${projectId}:`, {
+          error: dbError.message,
+          stack: dbError.stack,
+        });
+        return new Response(`Database error: ${dbError.message}`, { status: 500 });
       }
     }
 
@@ -138,17 +141,25 @@ export async function action({ context, request }: ActionFunctionArgs) {
             JSON.stringify(fileContent)
           );
         } catch (kvError) {
-          logger.error(`Failed to store file ${fileName} in PROJECT_FILES for project ${projectId}:`, kvError);
-          throw new Error(`KV storage error in PROJECT_FILES: ${kvError.message}`);
+          logger.error(`Failed to store file ${fileName} in PROJECT_FILES for project ${projectId}:`, {
+            error: kvError.message,
+            stack: kvError.stack,
+          });
+          return new Response(`KV storage error: ${kvError.message}`, { status: 500 });
         }
       }
     }
 
-    // Handle image if provided (store or log as needed)
+    // Handle image if provided (log for now, can be extended)
     if (image) {
       logger.debug(`Image provided for project ${projectId}: ${image}`);
     }
 
+    // Temporarily disable streaming to isolate the 500 error - return a simple success response
+    return new Response('Chat saved successfully', { status: 200 });
+
+    // Uncomment and fix the following streaming logic if needed after confirming saves work
+    /*
     const cookieHeader = request.headers.get('Cookie');
     const apiKeys = JSON.parse(parseCookies(cookieHeader || '').apiKeys || '{}');
     const providerSettings: Record<string, IProviderSetting> = JSON.parse(
@@ -202,7 +213,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
           dataStream.writeMessageAnnotation({
             type: 'chatSummary',
             summary,
-            chatId: validMessages.slice(-1)?.[0]?.content, // Use content as a simple chatId fallback
+            chatId: validMessages.slice(-1)?.[0]?.content,
             projectId,
           } as ContextAnnotation);
 
@@ -372,6 +383,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
         'Text-Encoding': 'chunked',
       },
     });
+    */
   } catch (error: any) {
     logger.error(`Error in chatPostAction for project ${projectId}:`, {
       message: error.message,
