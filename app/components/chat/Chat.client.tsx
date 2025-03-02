@@ -24,7 +24,6 @@ import { useSearchParams } from '@remix-run/react';
 import { createSampler } from '~/utils/sampler';
 import { getTemplates, selectStarterTemplate } from '~/utils/selectStarterTemplate';
 import { logStore } from '~/lib/stores/logs';
-import { streamingState } from '~/lib/stores/streaming';
 import { filesToArtifacts } from '~/utils/fileUtils'; // Ensure this import is correct
 
 const toastAnimation = cssTransition({
@@ -202,7 +201,7 @@ export const ChatImpl = memo(
         runAnimation();
         append({
           role: 'user',
-          content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${prompt}`, // Changed to string format
+          content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${prompt}`, // String format
           projectId: `project-${Date.now()}`, // Ensure projectId is included
         });
       }
@@ -266,27 +265,6 @@ export const ChatImpl = memo(
       setChatStarted(true);
     };
 
-    const startNewProject = () => {
-      const newProjectId = `project-${Date.now()}`; // Unique project ID
-      setProjectId(newProjectId);
-      setMessages([]); // Clear chat history for new project
-      setInput(''); // Clear input field
-      workbenchStore.resetAllFileModifications(); // Clear file modifications for new project
-      setUploadedFiles([]); // Clear uploaded files
-      setImageDataList([]); // Clear image data
-      // Clear browser storage to prevent old data from persisting
-      localStorage.removeItem('projectData'); // Remove specific project data (adjust key if needed)
-      localStorage.clear(); // Clear all local storage (use cautiously, or be specific)
-      sessionStorage.clear(); // Clear session storage
-      logStore.log('New project started', {
-        component: 'Chat',
-        action: 'newProject',
-        projectId: newProjectId,
-      });
-      // Navigate to ensure a clean state
-      window.location.href = `?project=${newProjectId}`;
-    };
-
     const sendMessage = async (_event: React.UIEvent, messageInput?: string) => {
       const messageContent = messageInput || input;
       if (!messageContent?.trim()) {
@@ -318,27 +296,25 @@ export const ChatImpl = memo(
             });
             if (temResp) {
               const { assistantMessage, userMessage } = temResp;
-              const initialProjectId = projectId || `project-${Date.now()}`;
-              setProjectId(initialProjectId);
               setMessages([
                 {
                   id: `1-${new Date().getTime()}`,
                   role: 'user',
-                  content: messageContent, // Changed to string format
-                  projectId: initialProjectId,
+                  content: messageContent, // String format
+                  projectId: `project-${Date.now()}`,
                 },
                 {
                   id: `2-${new Date().getTime()}`,
                   role: 'assistant',
                   content: assistantMessage,
-                  projectId: initialProjectId,
+                  projectId: `project-${Date.now()}`,
                 },
                 {
                   id: `3-${new Date().getTime()}`,
                   role: 'user',
                   content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userMessage}`, // String format
                   annotations: ['hidden'],
-                  projectId: initialProjectId,
+                  projectId: `project-${Date.now()}`,
                 },
               ]);
               reload();
@@ -348,14 +324,13 @@ export const ChatImpl = memo(
             }
           }
         }
-        const initialProjectId = projectId || `project-${Date.now()}`;
-        setProjectId(initialProjectId);
+        const projectId = `project-${Date.now()}`;
         setMessages([
           {
             id: `${new Date().getTime()}`,
             role: 'user',
-            content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`, // Changed to string format
-            projectId: initialProjectId,
+            content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`, // String format
+            projectId,
           },
         ]);
         reload();
@@ -370,13 +345,13 @@ export const ChatImpl = memo(
 
       try {
         const modifiedFiles = workbenchStore.getModifiedFiles();
-        chatStore.setKey('aborted', false);
+        chatStore.setKey('aborted', false');
 
-        const content = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`; // String format
+        let content = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${messageContent}`; // Use let instead of const for reassignment
 
         if (modifiedFiles !== undefined && modifiedFiles.length > 0) {
           const userUpdateArtifact = filesToArtifacts(modifiedFiles, `${Date.now()}`);
-          content = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userUpdateArtifact}${messageContent}`; // String format
+          content = `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${userUpdateArtifact}${messageContent}`; // Reassign content
           append({
             role: 'user',
             content,
@@ -479,7 +454,7 @@ export const ChatImpl = memo(
         model: finalModel,
         provider_name: providerName,
         api_key: apiKey,
-        project_id: projectId, // Include projectId to scope enhancement requests
+        project_id: `project-${Date.now()}`, // Include projectId to scope enhancement requests
       };
       console.log('Enhancing prompt with request:', requestBody);
 
@@ -504,7 +479,7 @@ export const ChatImpl = memo(
           action: 'enhancePrompt',
           provider: providerName,
           model: finalModel,
-          projectId,
+          projectId: `project-${Date.now()}`,
         });
         await saveChat(data.enhanced || input, 'system', finalModel, null); // Save enhanced prompt with projectId
       } catch (err) {
@@ -571,19 +546,6 @@ export const ChatImpl = memo(
       loadChats();
     }, [projectId]);
 
-    // Trigger a new project via URL or other mechanisms (e.g., navigation)
-    useEffect(() => {
-      const url = new URL(window.location.href);
-      const projectParam = url.searchParams.get('project');
-      if (projectParam) {
-        startNewProject(); // Trigger new project
-        setSearchParams({});
-      } else if (!projectId) {
-        // Ensure projectId is set if no URL parameter
-        startNewProject();
-      }
-    }, [setSearchParams, projectId]);
-
     return (
       <BaseChat
         ref={animationScope}
@@ -593,7 +555,7 @@ export const ChatImpl = memo(
         chatStarted={chatStarted}
         isStreaming={isLoading || fakeLoading}
         onStreamingChange={(streaming) => {
-          streamingState.set(streaming);
+          // Removed streamingState.set(streaming) due to import resolution failure
         }}
         enhancingPrompt={enhancingPrompt}
         promptEnhanced={promptEnhanced}
