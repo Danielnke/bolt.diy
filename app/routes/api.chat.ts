@@ -1,66 +1,13 @@
+// app/routes/api.chat.ts
 import { type ActionFunctionArgs, type LoaderFunctionArgs } from '@remix-run/cloudflare';
-import { createDataStream, generateId } from 'ai';
-import SwitchableStream from '~/lib/.server/llm/switchable-stream';
-import { streamText, type Messages, type StreamingOptions } from '~/lib/.server/llm/stream-text';
-import type { IProviderSetting } from '~/types/model';
 import { createScopedLogger } from '~/utils/logger';
-import { getFilePaths, selectContext } from '~/lib/.server/llm/select-context';
-import type { ContextAnnotation, ProgressAnnotation } from '~/types/context';
-import { WORK_DIR } from '~/utils/constants';
-import { createSummary } from '~/lib/.server/llm/create-summary';
-import { filesToArtifacts } from '~/utils/fileUtils'; // Ensure this is imported correctly
 
-// Define constants here or in a shared module to avoid server-only imports
-const MAX_RESPONSE_SEGMENTS = 5; // Example value, adjust as needed
-const MAX_TOKENS = 4096; // Example value, adjust as needed
+// Define constants here to avoid server-only imports
+const MAX_RESPONSE_SEGMENTS = 5; // Adjust as needed
+const MAX_TOKENS = 4096; // Adjust as needed
 const CONTINUE_PROMPT = 'Please continue the response.';
 
 const logger = createScopedLogger('api.chat');
-
-function parseCookies(cookieHeader: string): Record<string, string> {
-  const cookies: Record<string, string> = {};
-
-  const items = cookieHeader.split(';').map((cookie) => cookie.trim());
-
-  items.forEach((item) => {
-    const [name, ...rest] = item.split('=');
-
-    if (name && rest) {
-      const decodedName = decodeURIComponent(name.trim());
-      const decodedValue = decodeURIComponent(rest.join('=').trim());
-      cookies[decodedName] = decodedValue;
-    }
-  });
-
-  return cookies;
-}
-
-// Function to clean up old D1 data (run once or on demand)
-async function cleanupOldD1Data(env: any) {
-  try {
-    const { count } = await env.DB.prepare(`
-      DELETE FROM chat_messages WHERE project_id = 'default-project'
-    `).run();
-    logger.debug(`Cleaned up ${count} old chat messages with project_id = 'default-project' in bolt_diy_database`);
-  } catch (error) {
-    logger.error('Failed to clean up old D1 data in bolt_diy_database:', error);
-  }
-}
-
-// Function to clean up old KV data (non-project-specific keys)
-async function cleanupOldKVData(env: any) {
-  try {
-    const keys = await env.PROJECT_FILES.list({ prefix: '' }); // List all keys
-    for (const key of keys.keys) {
-      if (!key.name.startsWith('PROJECT_') || !key.name.includes('/')) {
-        await env.PROJECT_FILES.delete(key.name);
-        logger.debug(`Deleted old KV key: ${key.name}`);
-      }
-    }
-  } catch (error) {
-    logger.error('Failed to clean up old KV data in PROJECT_FILES:', error);
-  }
-}
 
 // Handle POST requests (send/save chats and files)
 export async function action({ context, request }: ActionFunctionArgs) {
@@ -70,12 +17,13 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
   const env = context.cloudflare?.env;
 
-  // Run cleanup on first POST request (optional: run once or on demand)
-  if (!env.CLEANUP_DONE) {
-    await cleanupOldD1Data(env);
-    await cleanupOldKVData(env);
-    env.CLEANUP_DONE = true; // Prevent repeated cleanup
-  }
+  // Dynamically import server-only modules inside the action function
+  const { createDataStream, generateId } = await import('ai');
+  const SwitchableStream = (await import('~/lib/.server/llm/switchable-stream')).default;
+  const { streamText } = await import('~/lib/.server/llm/stream-text');
+  const { getFilePaths, selectContext } = await import('~/lib/.server/llm/select-context');
+  const { createSummary } = await import('~/lib/.server/llm/create-summary');
+  const { filesToArtifacts } = await import('~/utils/fileUtils');
 
   try {
     // Parse the request body
@@ -88,7 +36,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
       promptId?: string;
     }>();
 
-    // Basic validation with fallbacks
+    // Basic validation
     if (!projectId || typeof projectId !== 'string') {
       logger.error('Missing or invalid projectId', { projectId });
       return new Response('Missing or invalid projectId', { status: 400 });
@@ -99,7 +47,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
       return new Response('Missing or invalid messages', { status: 400 });
     }
 
-    // Validate and normalize each message
+    // Normalize messages
     const validMessages = messages.map((msg) => ({
       content: (msg.content || '').trim() || 'No content',
       role: (msg.role || 'unknown').trim() || 'unknown',
@@ -112,7 +60,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
     logger.info(`Processing chat request for project ${projectId} in bolt_diy_database`);
 
-    // Save chat messages to D1 (bolt_diy_database)
+    // Save chat messages to D1
     for (const message of validMessages) {
       const content = message.content;
       const role = message.role;
@@ -134,7 +82,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
       }
     }
 
-    // Store files in Cloudflare KV (PROJECT_FILES) under PROJECT_<projectId>
+    // Store files in Cloudflare KV
     if (files && Object.keys(files).length > 0) {
       const namespace = `PROJECT_${projectId}`;
       for (const [fileName, fileContent] of Object.entries(files)) {
@@ -153,243 +101,17 @@ export async function action({ context, request }: ActionFunctionArgs) {
       }
     }
 
-    // Handle image if provided (log for now, can be extended)
+    // Handle image (log for now)
     if (image) {
       logger.debug(`Image provided for project ${projectId}: ${image}`);
     }
 
-    // Simplified response (no streaming for now to isolate 500 errors)
+    // Simplified response to ensure build succeeds
     return new Response(JSON.stringify({ success: true, message: 'Chat saved successfully' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
 
-    // Uncomment and fix the following streaming logic if needed after confirming saves work
-    /*
-    const cookieHeader = request.headers.get('Cookie');
-    const apiKeys = JSON.parse(parseCookies(cookieHeader || '').apiKeys || '{}');
-    const providerSettings: Record<string, IProviderSetting> = JSON.parse(
-      parseCookies(cookieHeader || '').providers || '{}',
-    );
-
-    const stream = new SwitchableStream();
-
-    const cumulativeUsage = {
-      completionTokens: 0,
-      promptTokens: 0,
-      totalTokens: 0,
-    };
-    const encoder: TextEncoder = new TextEncoder();
-    let progressCounter: number = 1;
-
-    const dataStream = createDataStream({
-      async execute(dataStream) {
-        const filePaths = getFilePaths(files || {});
-        let filteredFiles: FileMap | undefined = undefined;
-        let summary: string | undefined = undefined;
-
-        if (filePaths.length > 0 && contextOptimization) {
-          dataStream.writeData('HI ');
-          logger.debug(`Generating Chat Summary for project ${projectId}`);
-          dataStream.writeMessageAnnotation({
-            type: 'progress',
-            value: progressCounter++,
-            message: 'Generating Chat Summary',
-            projectId,
-          } as ProgressAnnotation);
-
-          summary = await createSummary({
-            messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content })),
-            env,
-            apiKeys,
-            providerSettings,
-            promptId: promptId || 'default',
-            contextOptimization,
-            projectId,
-            onFinish(resp) {
-              if (resp.usage) {
-                logger.debug(`createSummary token usage for project ${projectId}`, JSON.stringify(resp.usage));
-                cumulativeUsage.completionTokens += resp.usage.completionTokens || 0;
-                cumulativeUsage.promptTokens += resp.usage.promptTokens || 0;
-                cumulativeUsage.totalTokens += resp.usage.totalTokens || 0;
-              }
-            },
-          });
-
-          dataStream.writeMessageAnnotation({
-            type: 'chatSummary',
-            summary,
-            chatId: validMessages.slice(-1)?.[0]?.content,
-            projectId,
-          } as ContextAnnotation);
-
-          logger.debug(`Updating Context Buffer for project ${projectId}`);
-          dataStream.writeMessageAnnotation({
-            type: 'progress',
-            value: progressCounter++,
-            message: 'Updating Context Buffer',
-            projectId,
-          } as ProgressAnnotation);
-
-          filteredFiles = await selectContext({
-            messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content })),
-            env,
-            apiKeys,
-            files,
-            providerSettings,
-            promptId: promptId || 'default',
-            contextOptimization,
-            summary,
-            projectId,
-            onFinish(resp) {
-              if (resp.usage) {
-                logger.debug(`selectContext token usage for project ${projectId}`, JSON.stringify(resp.usage));
-                cumulativeUsage.completionTokens += resp.usage.completionTokens || 0;
-                cumulativeUsage.promptTokens += resp.usage.promptTokens || 0;
-                cumulativeUsage.totalTokens += resp.usage.totalTokens || 0;
-              }
-            },
-          });
-
-          if (filteredFiles) {
-            logger.debug(`Files in context: ${JSON.stringify(Object.keys(filteredFiles))} for project ${projectId}`);
-          }
-
-          dataStream.writeMessageAnnotation({
-            type: 'codeContext',
-            files: Object.keys(filteredFiles || {}).map((key) => {
-              let path = key;
-              if (path.startsWith(WORK_DIR)) {
-                path = path.replace(WORK_DIR, '');
-              }
-              return path;
-            }),
-            projectId,
-          } as ContextAnnotation);
-
-          dataStream.writeMessageAnnotation({
-            type: 'progress',
-            value: progressCounter++,
-            message: 'Context Buffer Updated',
-            projectId,
-          } as ProgressAnnotation);
-          logger.debug(`Context Buffer Updated for project ${projectId}`);
-        }
-
-        const options: StreamingOptions = {
-          toolChoice: 'none',
-          onFinish: async ({ text: content, finishReason, usage }) => {
-            logger.debug(`Usage for project ${projectId}`, JSON.stringify(usage));
-
-            if (usage) {
-              cumulativeUsage.completionTokens += usage.completionTokens || 0;
-              cumulativeUsage.promptTokens += usage.promptTokens || 0;
-              cumulativeUsage.totalTokens += usage.totalTokens || 0;
-            }
-
-            if (finishReason !== 'length') {
-              dataStream.writeMessageAnnotation({
-                type: 'usage',
-                value: {
-                  completionTokens: cumulativeUsage.completionTokens,
-                  promptTokens: cumulativeUsage.promptTokens,
-                  totalTokens: cumulativeUsage.totalTokens,
-                },
-                projectId,
-              });
-              await new Promise((resolve) => setTimeout(resolve, 0));
-              return;
-            }
-
-            if (stream.switches >= MAX_RESPONSE_SEGMENTS) {
-              throw Error(`Cannot continue message for project ${projectId}: Maximum segments reached`);
-            }
-
-            const switchesLeft = MAX_RESPONSE_SEGMENTS - stream.switches;
-
-            logger.info(`Reached max token limit (${MAX_TOKENS}): Continuing message (${switchesLeft} switches left) for project ${projectId}`);
-
-            const newMessages = [
-              ...validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content, id: generateId() })),
-              { id: generateId(), role: 'assistant', content, projectId },
-              { id: generateId(), role: 'user', content: CONTINUE_PROMPT, projectId },
-            ];
-
-            const result = await streamText({
-              messages: newMessages,
-              env,
-              options,
-              apiKeys,
-              files,
-              providerSettings,
-              promptId: promptId || 'default',
-              contextOptimization,
-              projectId,
-            });
-
-            result.mergeIntoDataStream(dataStream);
-
-            (async () => {
-              for await (const part of result.fullStream) {
-                if (part.type === 'error') {
-                  const error: any = part.error;
-                  logger.error(`Error streaming for project ${projectId}: ${error}`);
-                  return;
-                }
-              }
-            })();
-          },
-        };
-
-        try {
-          const result = await streamText({
-            messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content, id: createId() })),
-            env,
-            options,
-            apiKeys,
-            files,
-            providerSettings,
-            promptId: promptId || 'default',
-            contextOptimization,
-            projectId,
-          });
-
-          (async () => {
-            for await (const part of result.fullStream) {
-              if (part.type === 'error') {
-                const error: any = part.error;
-                logger.error(`Error streaming for project ${projectId}: ${error}`);
-                return;
-              }
-            }
-          })();
-
-          result.mergeIntoDataStream(dataStream);
-        } catch (streamError) {
-          logger.error(`Failed to stream response for project ${projectId}:`, streamError);
-          throw new Error(`Streaming error: ${streamError.message}`);
-        }
-      },
-      onError: (error: any) => `Custom error for project ${projectId}: ${error.message}`,
-    }).pipeThrough(
-      new TransformStream({
-        transform: (chunk, controller) => {
-          const str = typeof chunk === 'string' ? chunk : JSON.stringify(chunk);
-          controller.enqueue(new TextEncoder().encode(str));
-        },
-      }),
-    );
-
-    return new Response(dataStream, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        Connection: 'keep-alive',
-        'Cache-Control': 'no-cache',
-        'Text-Encoding': 'chunked',
-      },
-    });
-    */
   } catch (error: any) {
     logger.error(`Error in chatPostAction for project ${projectId}:`, {
       message: error.message,
