@@ -139,7 +139,7 @@ export const ChatImpl = memo(
 
     const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
 
-    const [projectId, setProjectId] = useState<string>(`project-${Date.now()}`); // Ensure projectId is always defined with a string type
+    const [projectId, setProjectId] = useState<string>(`project-${Date.now()}`); // Ensure projectId is always defined
 
     const {
       messages,
@@ -161,7 +161,7 @@ export const ChatImpl = memo(
         files,
         promptId: promptId || 'default', // Default to 'default' if not set
         contextOptimization: contextOptimizationEnabled,
-        projectId, // Pass projectId to API for chat and code isolation
+        projectId: projectId || `project-${Date.now()}`, // Fallback for projectId
       },
       sendExtraMessageFields: true,
       onError: (e) => {
@@ -193,6 +193,7 @@ export const ChatImpl = memo(
 
         logger.debug('Finished streaming');
       },
+      // Handle both JSON and stream responses
       initialMessages,
       initialInput: Cookies.get(PROMPT_COOKIE_KEY) || '',
     });
