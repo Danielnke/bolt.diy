@@ -85,38 +85,35 @@ export async function action({ context, request }: ActionFunctionArgs) {
       promptId?: string;
     }>();
 
-    if (!projectId || !messages || !Array.isArray(messages)) {
-      logger.error(`Invalid request data for project ${projectId || 'unknown'}: missing projectId or messages`, {
-        projectId,
-        messages,
-      });
-      return new Response('Missing or invalid projectId or messages', { status: 400 });
+    // Basic validation with fallbacks
+    if (!projectId || typeof projectId !== 'string') {
+      logger.error('Missing or invalid projectId', { projectId });
+      return new Response('Missing or invalid projectId', { status: 400 });
     }
 
-    if (typeof projectId !== 'string' || projectId.trim() === '') {
-      logger.error(`Invalid projectId format: ${projectId}`);
-      return new Response('Invalid projectId format', { status: 400 });
+    if (!messages || !Array.isArray(messages)) {
+      logger.error('Missing or invalid messages', { messages });
+      return new Response('Missing or invalid messages', { status: 400 });
     }
 
-    // Validate each message in the array
-    for (const message of messages) {
-      if (!message.content || typeof message.content !== 'string' || message.content.trim() === '') {
-        logger.error(`Invalid message content for project ${projectId}:`, { content: message.content });
-        return new Response('Invalid message content or role', { status: 400 });
-      }
-      if (!message.role || typeof message.role !== 'string' || message.role.trim() === '') {
-        logger.error(`Invalid message role for project ${projectId}:`, { role: message.role });
-        return new Response('Invalid message content or role', { status: 400 });
-      }
+    // Validate and normalize each message
+    const validMessages = messages.map((msg) => ({
+      content: (msg.content || '').trim() || 'No content',
+      role: (msg.role || 'unknown').trim() || 'unknown',
+    }));
+
+    if (validMessages.length === 0) {
+      logger.error('No valid messages provided for project ' + projectId);
+      return new Response('No valid messages provided', { status: 400 });
     }
 
     logger.info(`Processing chat request for project ${projectId} in bolt_diy_database`);
 
     // Save chat messages to D1 (bolt_diy_database)
-    for (const message of messages) {
-      const content = message.content.trim();
-      const role = message.role.trim();
-      const messageModel = model || 'default-model'; // Use client-provided model or default
+    for (const message of validMessages) {
+      const content = message.content;
+      const role = message.role;
+      const messageModel = model || 'default-model';
 
       try {
         await env.DB.prepare(`
@@ -150,7 +147,6 @@ export async function action({ context, request }: ActionFunctionArgs) {
     // Handle image if provided (store or log as needed)
     if (image) {
       logger.debug(`Image provided for project ${projectId}: ${image}`);
-      // Optionally store image in KV or D1 if needed (adjust as per your requirements)
     }
 
     const cookieHeader = request.headers.get('Cookie');
@@ -182,20 +178,17 @@ export async function action({ context, request }: ActionFunctionArgs) {
             type: 'progress',
             value: progressCounter++,
             message: 'Generating Chat Summary',
-            projectId, // Include projectId for scoping
+            projectId,
           } as ProgressAnnotation);
 
-          // Create a summary of the chat
-          console.log(`Messages count: ${messages.length} for project ${projectId}`);
-
           summary = await createSummary({
-            messages: [...messages],
+            messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content })),
             env,
             apiKeys,
             providerSettings,
-            promptId: promptId || 'default', // Use 'default' if promptId is undefined
+            promptId: promptId || 'default',
             contextOptimization,
-            projectId, // Pass projectId for context
+            projectId,
             onFinish(resp) {
               if (resp.usage) {
                 logger.debug(`createSummary token usage for project ${projectId}`, JSON.stringify(resp.usage));
@@ -209,31 +202,28 @@ export async function action({ context, request }: ActionFunctionArgs) {
           dataStream.writeMessageAnnotation({
             type: 'chatSummary',
             summary,
-            chatId: messages.slice(-1)?.[0]?.id,
-            projectId, // Include projectId in the annotation
+            chatId: validMessages.slice(-1)?.[0]?.content, // Use content as a simple chatId fallback
+            projectId,
           } as ContextAnnotation);
 
-          // Update context buffer
           logger.debug(`Updating Context Buffer for project ${projectId}`);
           dataStream.writeMessageAnnotation({
             type: 'progress',
             value: progressCounter++,
             message: 'Updating Context Buffer',
-            projectId, // Include projectId for scoping
+            projectId,
           } as ProgressAnnotation);
 
-          // Select context files
-          console.log(`Messages count: ${messages.length} for project ${projectId}`);
           filteredFiles = await selectContext({
-            messages: [...messages],
+            messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content })),
             env,
             apiKeys,
             files,
             providerSettings,
-            promptId: promptId || 'default', // Use 'default' if promptId is undefined
+            promptId: promptId || 'default',
             contextOptimization,
             summary,
-            projectId, // Pass projectId for scoping
+            projectId,
             onFinish(resp) {
               if (resp.usage) {
                 logger.debug(`selectContext token usage for project ${projectId}`, JSON.stringify(resp.usage));
@@ -250,28 +240,25 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
           dataStream.writeMessageAnnotation({
             type: 'codeContext',
-            files: Object.keys(filteredFiles).map((key) => {
+            files: Object.keys(filteredFiles || {}).map((key) => {
               let path = key;
-
               if (path.startsWith(WORK_DIR)) {
                 path = path.replace(WORK_DIR, '');
               }
-
               return path;
             }),
-            projectId, // Include projectId in the annotation
+            projectId,
           } as ContextAnnotation);
 
           dataStream.writeMessageAnnotation({
             type: 'progress',
             value: progressCounter++,
             message: 'Context Buffer Updated',
-            projectId, // Include projectId for scoping
+            projectId,
           } as ProgressAnnotation);
           logger.debug(`Context Buffer Updated for project ${projectId}`);
         }
 
-        // Stream the text response
         const options: StreamingOptions = {
           toolChoice: 'none',
           onFinish: async ({ text: content, finishReason, usage }) => {
@@ -291,7 +278,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
                   promptTokens: cumulativeUsage.promptTokens,
                   totalTokens: cumulativeUsage.totalTokens,
                 },
-                projectId, // Include projectId in usage annotation
+                projectId,
               });
               await new Promise((resolve) => setTimeout(resolve, 0));
               return;
@@ -305,19 +292,22 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
             logger.info(`Reached max token limit (${MAX_TOKENS}): Continuing message (${switchesLeft} switches left) for project ${projectId}`);
 
-            messages.push({ id: generateId(), role: 'assistant', content, projectId });
-            messages.push({ id: generateId(), role: 'user', content: CONTINUE_PROMPT, projectId });
+            const newMessages = [
+              ...validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content, id: generateId() })),
+              { id: generateId(), role: 'assistant', content, projectId },
+              { id: generateId(), role: 'user', content: CONTINUE_PROMPT, projectId },
+            ];
 
             const result = await streamText({
-              messages,
+              messages: newMessages,
               env,
               options,
               apiKeys,
               files,
               providerSettings,
-              promptId: promptId || 'default', // Use 'default' if promptId is undefined
+              promptId: promptId || 'default',
               contextOptimization,
-              projectId, // Pass projectId for scoping
+              projectId,
             });
 
             result.mergeIntoDataStream(dataStream);
@@ -335,15 +325,15 @@ export async function action({ context, request }: ActionFunctionArgs) {
         };
 
         const result = await streamText({
-          messages,
+          messages: validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content, id: generateId() })),
           env,
           options,
           apiKeys,
           files,
           providerSettings,
-          promptId: promptId || 'default', // Use 'default' if promptId is undefined
+          promptId: promptId || 'default',
           contextOptimization,
-          projectId, // Pass projectId for scoping
+          projectId,
         });
 
         (async () => {
