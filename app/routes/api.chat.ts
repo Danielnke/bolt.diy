@@ -34,6 +34,12 @@ interface ContextAnnotation {
   projectId?: string;
 }
 
+interface IProviderSetting {
+  apiKey?: string;
+  baseUrl?: string;
+  // Add other properties as needed
+}
+
 // Define constants here to avoid server-only imports
 const MAX_RESPONSE_SEGMENTS = 5; // Adjust as needed
 const MAX_TOKENS = 4096; // Adjust as needed
@@ -170,7 +176,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
       logger.debug(`Image provided for project ${projectId}: ${image}`);
     }
 
-    // Streaming response with corrected formatting
+    // Streaming response with corrected formatting and undefined checks
     const cookieHeader = request.headers.get('Cookie');
     const apiKeys = JSON.parse(parseCookies(cookieHeader || '').apiKeys || '{}');
     const providerSettings: Record<string, IProviderSetting> = JSON.parse(
@@ -218,7 +224,11 @@ export async function action({ context, request }: ActionFunctionArgs) {
                 cumulativeUsage.totalTokens += resp.usage.totalTokens || 0;
               }
             },
-          });
+          }) || ''; // Fallback to empty string if undefined
+
+          if (!summary) {
+            logger.warn(`No summary generated for project ${projectId}, using empty string`);
+          }
 
           dataStream.writeData({
             type: 'progress',
@@ -230,8 +240,8 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
           dataStream.writeMessageAnnotation({
             type: 'chatSummary',
-            summary,
-            chatId: validMessages.slice(-1)?.[0]?.content,
+            summary: summary || '',
+            chatId: validMessages.slice(-1)?.[0]?.content || '',
             projectId,
           } as ContextAnnotation);
 
@@ -261,7 +271,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
                 cumulativeUsage.totalTokens += resp.usage.totalTokens || 0;
               }
             },
-          });
+          }) || {}; // Fallback to empty object if undefined
 
           if (filteredFiles) {
             logger.debug(`Files in context: ${JSON.stringify(Object.keys(filteredFiles))} for project ${projectId}`);
@@ -291,6 +301,11 @@ export async function action({ context, request }: ActionFunctionArgs) {
         const options: StreamingOptions = {
           toolChoice: 'none',
           onFinish: async ({ text: content, finishReason, usage }) => {
+            if (!content) {
+              logger.error(`No content received in stream for project ${projectId}`);
+              return; // Skip if content is undefined
+            }
+
             logger.debug(`Usage for project ${projectId}`, JSON.stringify(usage));
 
             if (usage) {
@@ -321,7 +336,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
             }
 
             if (stream.switches >= MAX_RESPONSE_SEGMENTS) {
-              throw Error(`Cannot continue message for project ${projectId}: Maximum segments reached`);
+              throw new Error(`Cannot continue message for project ${projectId}: Maximum segments reached`);
             }
 
             const switchesLeft = MAX_RESPONSE_SEGMENTS - stream.switches;
@@ -330,7 +345,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
             const newMessages = [
               ...validMessages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content, id: generateId() })),
-              { id: generateId(), role: 'assistant', content, projectId },
+              { id: generateId(), role: 'assistant', content: content || '', projectId },
               { id: generateId(), role: 'user', content: `[Model: ${model || 'default-model'}]\n\n[Provider: ${provider || 'default-provider'}]\n\n${CONTINUE_PROMPT}`, projectId },
             ];
 
@@ -344,7 +359,12 @@ export async function action({ context, request }: ActionFunctionArgs) {
               promptId: promptId || 'default',
               contextOptimization,
               projectId,
-            });
+            }) || { fullStream: [], mergeIntoDataStream: () => {} }; // Fallback if undefined
+
+            if (!result.fullStream) {
+              logger.error(`Stream result is undefined for project ${projectId}`);
+              return;
+            }
 
             result.mergeIntoDataStream(dataStream);
 
@@ -378,24 +398,36 @@ export async function action({ context, request }: ActionFunctionArgs) {
           promptId: promptId || 'default',
           contextOptimization,
           projectId,
-        });
+        }) || { fullStream: [], mergeIntoDataStream: () => {} }; // Fallback if undefined
+
+        if (!result.fullStream) {
+          logger.error(`Stream result is undefined for project ${projectId}`);
+          return new Response('Streaming error: No data received', { status: 500 });
+        }
 
         (async () => {
           for await (const part of result.fullStream) {
             if (part.type === 'error') {
               const error: any = part.error;
               logger.error(`Error streaming for project ${projectId}: ${error}`);
-              return;
+              return new Response(`Streaming error: ${error.message || 'Unknown error'}`, { status: 500 });
             }
           }
         })();
 
         result.mergeIntoDataStream(dataStream);
       },
-      onError: (error: any) => `Custom error for project ${projectId}: ${error.message}`,
+      onError: (error: any) => {
+        logger.error(`Stream error for project ${projectId}: ${error.message}`);
+        return `data: ${JSON.stringify({ error: error.message })}\n\n`; // Send error as stream chunk
+      },
     }).pipeThrough(
       new TransformStream({
         transform: (chunk, controller) => {
+          if (chunk === undefined || chunk === null) {
+            logger.warn(`Skipping undefined/null chunk for project ${projectId}`);
+            return; // Skip undefined/null chunks
+          }
           const str = typeof chunk === 'string' ? `data: ${chunk}\n\n` : `data: ${JSON.stringify(chunk)}\n\n`; // Ensure proper SSE format
           controller.enqueue(new TextEncoder().encode(str));
         },
