@@ -154,7 +154,11 @@ export class PreviewsStore {
     try {
       // Watch for file changes
       webcontainer.internal.watchPaths(
-        { include: ['**/*'], exclude: ['**/node_modules', '.git'], includeContent: true },
+        {
+          // Only watch specific file types that affect the preview
+          include: ['**/*.html', '**/*.css', '**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx', '**/*.json'],
+          exclude: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**', '**/coverage/**'],
+        },
         async (_events) => {
           const previews = this.previews.get();
 
@@ -290,6 +294,18 @@ export class PreviewsStore {
     }, this.#REFRESH_DELAY);
 
     this.#refreshTimeouts.set(previewId, timeout);
+  }
+
+  refreshAllPreviews() {
+    const previews = this.previews.get();
+
+    for (const preview of previews) {
+      const previewId = this.getPreviewId(preview.baseUrl);
+
+      if (previewId) {
+        this.broadcastFileChange(previewId);
+      }
+    }
   }
 }
 
